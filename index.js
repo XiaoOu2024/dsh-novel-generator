@@ -118,6 +118,20 @@ function snapshotPaths(project, snapshot) {
   };
 }
 
+/** Outline card for one chapter: synopsis plus the knobs it was generated with. */
+function chapterOutlinePaths(project, chapter) {
+  const number = String((Number(chapter.index) || 0) + 1).padStart(2, '0');
+  const dir = join(projectContentDir(project), '章节大纲');
+  return {
+    dir,
+    file: join(dir, `第${number}章 ${safeSegment(chapter.title, '未命名')}.md`),
+  };
+}
+
+function projectInfoFile(project) {
+  return join(projectContentDir(project), '作品信息.md');
+}
+
 /** Delete a file an earlier build wrote straight into the working directory. */
 async function dropLegacyFile(legacyPath, expected) {
   try {
@@ -142,14 +156,99 @@ async function exportChapter(project, chapter, content) {
   } catch {
     // A deleted or read-only directory must not fail the save itself.
   }
+  await exportChapterOutline(project, chapter);
+  await exportProjectInfo(project);
+}
+
+/** Write the outline card (synopsis and its parameters) for one chapter. */
+async function exportChapterOutline(project, chapter) {
+  if (!project || !project.cwd) return;
+  try {
+    const target = chapterOutlinePaths(project, chapter);
+    await mkdir(target.dir, { recursive: true });
+    const outline = chapter.outline || null;
+    const span = chapterWindow(project, chapter);
+    const lines = [];
+    lines.push(`# 第 ${(Number(chapter.index) || 0) + 1} 章 ${chapter.title || '未命名'}`);
+    lines.push('');
+    lines.push(`- 故事时间：第 ${span.start} → ${span.end} 天（共 ${span.end - span.start} 天）`);
+    if (outline) {
+      lines.push(`- 字数要求：${outline.minWords} – ${outline.maxWords} 字`);
+      lines.push(`- 梗概最低字数：${outline.synopsisMinChars || 0}`);
+      lines.push(`- 大纲保存时间：${new Date(outline.savedAt || Date.now()).toISOString()}`);
+    } else {
+      lines.push('- 字数要求：尚未设置');
+    }
+    lines.push(`- 实际字数：${chapter.wordCount || 0}`);
+    lines.push(`- 状态：${chapter.status || 'draft'}`);
+    lines.push('');
+    lines.push('## 故事梗概');
+    lines.push('');
+    lines.push((outline && outline.synopsis) || '（还没有写梗概）');
+    lines.push('');
+    await writeFile(target.file, lines.join('\n'), 'utf8');
+  } catch {
+    // Best effort.
+  }
+}
+
+/** One readable page describing the work and every chapter's parameters. */
+async function exportProjectInfo(project) {
+  if (!project || !project.cwd) return;
+  try {
+    const dir = projectContentDir(project);
+    await mkdir(dir, { recursive: true });
+    const timeline = project.timeline || {};
+    const snapshots = project.snapshots || [];
+    const chapters = [...(project.chapters || [])]
+      .sort((a, b) => a.startDay - b.startDay || a.index - b.index);
+    const lines = [];
+    lines.push(`# 作品：${project.title || '未命名作品'}`);
+    lines.push('');
+    lines.push(`- 工作目录：${project.cwd}`);
+    lines.push(`- 绑定会话：${project.sessionId || '（无）'}`);
+    lines.push(`- 模型：${project.model ? `${project.model.provider} / ${project.model.model}` : '（默认）'}`);
+    lines.push(`- 预设：${project.agentPreset || '（默认）'}`);
+    lines.push(`- 快照间隔：每 ${timeline.unitDays || 30} 天一份`);
+    lines.push(`- 已写入快照：${snapshots.length ? snapshots.map((snapshot) => `第 ${snapshot.day} 天`).join('、') : '（暂无）'}`);
+    lines.push(`- 故事当前：第 ${lastChapterEnd(project)} 天`);
+    lines.push(`- 章节数：${chapters.length}`);
+    lines.push('');
+    lines.push('## 章节一览');
+    lines.push('');
+    lines.push('| 章 | 标题 | 故事时间 | 天数 | 字数要求 | 实际字数 | 状态 |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+    for (const chapter of chapters) {
+      const span = chapterWindow(project, chapter);
+      const outline = chapter.outline || {};
+      const cells = [
+        String((Number(chapter.index) || 0) + 1),
+        (chapter.title || '未命名').replace(/\|/g, '／'),
+        `第 ${span.start} → ${span.end} 天`,
+        String(span.end - span.start),
+        `${outline.minWords || '-'} – ${outline.maxWords || '-'}`,
+        String(chapter.wordCount || 0),
+        chapter.status || 'draft',
+      ];
+      lines.push(`| ${cells.join(' | ')} |`);
+    }
+    lines.push('');
+    lines.push('> 章节正文在同目录的「第NN章 标题.md」，各章梗概在「章节大纲」目录，世界快照在「世界快照」目录。');
+    lines.push('');
+    await writeFile(projectInfoFile(project), lines.join('\n'), 'utf8');
+  } catch {
+    // Best effort.
+  }
 }
 
 async function removeChapterFile(project, chapter) {
   if (!project || !project.cwd) return;
-  try {
-    await unlink(chapterPaths(project, chapter).file);
-  } catch {
-    // Already gone, or never written.
+  for (const target of [chapterPaths(project, chapter), chapterOutlinePaths(project, chapter)]) {
+    try {
+      await unlink(target.file);
+    } catch {
+      // Already gone, or never written.
+    }
   }
 }
 
@@ -227,6 +326,7 @@ async function syncChapterFiles(project) {
     } catch {
       await exportChapter(project, chapter, chapter.content);
     }
+    await exportChapterOutline(project, chapter);
   }
   for (const snapshot of project.snapshots || []) {
     try {
@@ -235,6 +335,7 @@ async function syncChapterFiles(project) {
       await exportSnapshot(project, snapshot);
     }
   }
+  await exportProjectInfo(project);
 }
 
 /**
@@ -741,7 +842,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.11',
+    revision: '2026-10-20.12',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -941,6 +1042,9 @@ async function saveOutline(root, body) {
   }
   if (savedChapter && String(savedChapter.content || '').trim() !== '') {
     await exportChapter(savedProject, savedChapter, savedChapter.content);
+  } else if (savedChapter) {
+    await exportChapterOutline(savedProject, savedChapter);
+    await exportProjectInfo(savedProject);
   }
   return result;
 }
@@ -1080,6 +1184,7 @@ function registerSnapshot(ctx, root, registry, projectId, day) {
       return snapshot;
     });
     await exportSnapshot(project, snapshot);
+    await exportProjectInfo(await readProject(root, projectId));
     return { snapshot };
   });
 }
