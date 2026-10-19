@@ -982,7 +982,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.13',
+    revision: '2026-10-20.14',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1555,8 +1555,24 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
     case '/project/delete': {
       const projectId = asText(body.projectId);
       if (projectId === '') throw httpError(400, '缺少 projectId');
+      // The work folder is this plugin's own output inside the chosen
+      // directory, so removing the work removes it too.
+      let workDir = null;
+      try {
+        const project = await readProject(root, projectId);
+        if (project.cwd) {
+          const folder = projectContentDir(project);
+          const relative = folder.slice(project.cwd.length).replace(/^[\\/]+/, '');
+          if (relative !== '') {
+            await rm(folder, { recursive: true, force: true });
+            workDir = folder;
+          }
+        }
+      } catch {
+        // A work whose folder is already gone still gets its record removed.
+      }
       await rm(join(projectsDir(root), projectId), { recursive: true, force: true });
-      return { removed: projectId };
+      return { removed: projectId, removedDir: workDir };
     }
     case '/project/timeline':
       return updateTimeline(root, body);

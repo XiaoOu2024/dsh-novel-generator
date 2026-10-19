@@ -29,7 +29,8 @@ window.__ModuleLoader__.load({
         const snapshot = localeService ? localeService.getLocale() : null;
         if (typeof snapshot === 'string') return snapshot;
         if (snapshot && typeof snapshot === 'object') {
-          return snapshot.locale || snapshot.id || snapshot.current || 'zh';
+          // LocaleSnapshot carries the active id in `active`.
+          return snapshot.active || snapshot.locale || snapshot.id || 'zh';
         }
       } catch {
         // A snapshot shape we do not know reads as the default.
@@ -487,7 +488,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [title, cwd, preset, provider, model, onOpen, onReload]);
 
       const remove = useCallback(async (project) => {
-        if (!window.confirm(t('确定删除作品「{title}」？章节与快照会一并删除，作品的会话本身保留。', 'Delete the work “{title}”? Its chapters and snapshots go with it; the session itself stays.', { title: project.title }))) return;
+        if (!window.confirm(t('确定删除作品「{title}」？这会同时删除工作目录下的作品文件夹（正文、梗概、世界快照）。作品的会话本身保留。', 'Delete the work “{title}”? This also deletes its folder in the working directory (chapters, outlines, world snapshots). The session itself stays.', { title: project.title }))) return;
         try {
           await api('/project/delete', { projectId: project.projectId });
           await onReload();
