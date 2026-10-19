@@ -556,14 +556,22 @@ window.__ModuleLoader__.load({
 
     function StoryPage({ detail, chapter, onBack, onOutline, onSaved }) {
       const [text, setText] = useState(chapter ? chapter.content || '' : '');
+      const [dirty, setDirty] = useState(false);
       const [busy, setBusy] = useState(false);
       const [message, setMessage] = useState('');
       const chapterId = chapter ? chapter.chapterId : null;
 
       useEffect(() => {
         setText(chapter ? chapter.content || '' : '');
+        setDirty(false);
         setMessage('');
       }, [chapterId]);
+
+      const stored = chapter ? chapter.content || '' : '';
+      useEffect(() => {
+        if (dirty) return;
+        setText(stored);
+      }, [stored, dirty]);
 
       const save = useCallback(async () => {
         if (!chapter) return;
@@ -571,6 +579,7 @@ window.__ModuleLoader__.load({
         setMessage('');
         try {
           await api('/chapter/save', { projectId: detail.projectId, chapterId: chapter.chapterId, content: text });
+          setDirty(false);
           setMessage('已保存');
           await onSaved();
         } catch (error) {
@@ -599,7 +608,10 @@ window.__ModuleLoader__.load({
                 className: 'dsn-textarea dsn-story',
                 value: text,
                 placeholder: '章节正文：生成后可以直接在这里修改，改完点保存。',
-                onChange: (event) => setText(event.target.value),
+                onChange: (event) => {
+                  setDirty(true);
+                  setText(event.target.value);
+                },
               })),
             h('div', { className: 'dsn-foot' },
               h('div', { className: 'dsn-muted' },
@@ -985,7 +997,7 @@ window.__ModuleLoader__.load({
                 h(ProjectsPage, { boot, workspace, onOpen: openProject, onReload: loadBoot }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入作品…')
-                : h(ProjectWorkspace, { detail, onReload: reloadDetail, notify })));
+                : h(ProjectWorkspace, { key: detail.projectId, detail, onReload: reloadDetail, notify })));
     }
 
     function StudioOverlay({ workspace }) {
