@@ -578,41 +578,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------ story page */
 
-    function StoryPage({ detail, chapter, previous, next, onBack, onOutline, onSaved, onOpenChapter, onNewChapter }) {
-      const [text, setText] = useState(chapter ? chapter.content || '' : '');
-      const [dirty, setDirty] = useState(false);
-      const [busy, setBusy] = useState(false);
-      const [message, setMessage] = useState('');
-      const chapterId = chapter ? chapter.chapterId : null;
-
-      useEffect(() => {
-        setText(chapter ? chapter.content || '' : '');
-        setDirty(false);
-        setMessage('');
-      }, [chapterId]);
-
-      const stored = chapter ? chapter.content || '' : '';
-      useEffect(() => {
-        if (dirty) return;
-        setText(stored);
-      }, [stored, dirty]);
-
-      const save = useCallback(async () => {
-        if (!chapter) return;
-        setBusy(true);
-        setMessage('');
-        try {
-          await api('/chapter/save', { projectId: detail.projectId, chapterId: chapter.chapterId, content: text });
-          setDirty(false);
-          setMessage('已保存');
-          await onSaved();
-        } catch (error) {
-          setMessage(messageOf(error));
-        } finally {
-          setBusy(false);
-        }
-      }, [chapter, detail.projectId, text, onSaved]);
-
+    /**
+     * The editor is controlled: the workspace owns the draft so that every way
+     * out of the page — back, next chapter, the outline, another project, or
+     * closing the studio — can ask about unsaved text first.
+     */
+    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter }) {
       const words = countWords(text);
       const window = chapter ? chapterWindow(detail, chapter) : null;
 
@@ -648,18 +619,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 className: 'dsn-textarea dsn-story',
                 value: text,
                 placeholder: '章节正文：生成后可以直接在这里修改，改完点保存。',
-                onChange: (event) => {
-                  setDirty(true);
-                  setText(event.target.value);
-                },
+                onChange: (event) => onEdit(event.target.value),
               })),
             h('div', { className: 'dsn-foot' },
               h('div', { className: 'dsn-muted' },
                 `${words} 字${chapter.outline ? ` · 大纲要求 ${chapter.outline.minWords}–${chapter.outline.maxWords} 字` : ''}`),
               h('div', { className: 'dsn-spacer' }),
-              message ? h('div', { className: 'dsn-hint' }, message) : null,
-              h('button', { className: 'dsn-btn primary', type: 'button', disabled: busy, onClick: save },
-                busy ? '保存中…' : '保存'))));
+              h('button', { className: 'dsn-btn primary', type: 'button', disabled: saving, onClick: onSave },
+                saving ? '保存中…' : '保存'))));
     }
 
     /* ---------------------------------------------------------- outline page */
@@ -972,13 +939,36 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, composing ? '自动推演中…' : '自动推演'))));
     }
 
+    /* --------------------------------------------------------- leave confirm */
+
+    /** Asked whenever unsaved chapter text would be left behind. */
+    function LeaveConfirm({ onCancel, onDiscard, onSave }) {
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(420px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, '这一章还没有保存'),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body', style: { gridTemplateColumns: '1fr' } },
+            h('div', { className: 'dsn-text', style: { fontSize: 12 } },
+              '离开这个界面会丢掉刚才的修改。要先保存吗？')),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, '取消'),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn', type: 'button', onClick: onDiscard }, '不保存离开'),
+            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onSave }, '保存并离开'))));
+    }
+
     /* ------------------------------------------------------------- workspace */
 
-    function ProjectWorkspace({ detail, onReload, notify }) {
+    function ProjectWorkspace({ detail, onReload, notify, onRegisterLeaveGuard }) {
       const [view, setView] = useState('world');
       const [chapterId, setChapterId] = useState(null);
       const [snapshotBusy, setSnapshotBusy] = useState(false);
       const [dialogOpen, setDialogOpen] = useState(false);
+      const [text, setText] = useState('');
+      const [dirty, setDirty] = useState(false);
+      const [saving, setSaving] = useState(false);
+      const [pendingAction, setPendingAction] = useState(null);
       const chapters = useMemo(
         () => [...(detail.chapters || [])].sort((a, b) => a.startDay - b.startDay || a.index - b.index),
         [detail.chapters],
@@ -988,28 +978,80 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const previous = position > 0 ? chapters[position - 1] : null;
       const next = position >= 0 && position < chapters.length - 1 ? chapters[position + 1] : null;
 
-      const openStory = useCallback((id) => {
-        setChapterId(id);
-        setView('story');
-      }, []);
+      // The draft follows the open chapter, and a generated body replaces it
+      // only while the user has nothing unsaved of their own.
+      const stored = chapter ? chapter.content || '' : '';
+      useEffect(() => {
+        setText(stored);
+        setDirty(false);
+      }, [chapterId]);
+      useEffect(() => {
+        if (dirty) return;
+        setText((current) => (current === stored ? current : stored));
+      }, [stored, dirty]);
 
-      const enterStory = useCallback((day) => {
-        if (chapters.length === 0) {
-          setChapterId(null);
-          setView('story');
+      const saveDraft = useCallback(async (silent) => {
+        if (!chapter) return true;
+        setSaving(true);
+        try {
+          await api('/chapter/save', { projectId: detail.projectId, chapterId: chapter.chapterId, content: text });
+          setDirty(false);
+          if (silent !== true) notify('章节已保存', 'success');
+          await onReload();
+          return true;
+        } catch (error) {
+          notify(messageOf(error), 'error');
+          return false;
+        } finally {
+          setSaving(false);
+        }
+      }, [chapter, detail.projectId, text, onReload, notify]);
+
+      /** Run a navigation step, asking about unsaved text first. */
+      const leave = useCallback((action) => {
+        if (!dirty) {
+          action();
           return;
         }
-        let best = chapters[0];
-        let bestDistance = Infinity;
-        for (const entry of chapters) {
-          const distance = Math.abs(chapterWindow(detail, entry).start - day);
-          if (distance < bestDistance) {
-            best = entry;
-            bestDistance = distance;
+        setPendingAction(() => action);
+      }, [dirty]);
+
+      // Leaving the whole studio or the project goes through the same gate.
+      const leaveRef = useRef(leave);
+      leaveRef.current = leave;
+      useEffect(() => {
+        if (typeof onRegisterLeaveGuard !== 'function') return undefined;
+        onRegisterLeaveGuard((proceed) => leaveRef.current(proceed));
+        return () => onRegisterLeaveGuard(null);
+      }, [onRegisterLeaveGuard]);
+
+      const openStory = useCallback((id) => {
+        leave(() => {
+          setChapterId(id);
+          setView('story');
+        });
+      }, [leave]);
+
+      const enterStory = useCallback((day) => {
+        leave(() => {
+          if (chapters.length === 0) {
+            setChapterId(null);
+            setView('story');
+            return;
           }
-        }
-        openStory(best.chapterId);
-      }, [chapters, detail, openStory]);
+          let best = chapters[0];
+          let bestDistance = Infinity;
+          for (const entry of chapters) {
+            const distance = Math.abs(chapterWindow(detail, entry).start - day);
+            if (distance < bestDistance) {
+              best = entry;
+              bestDistance = distance;
+            }
+          }
+          setChapterId(best.chapterId);
+          setView('story');
+        });
+      }, [chapters, detail, leave]);
 
       const lastEnd = useMemo(() => {
         let end = 0;
@@ -1080,11 +1122,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               chapter,
               previous,
               next,
-              onBack: () => setView('world'),
-              onOutline: () => setView('outline'),
+              text,
+              saving,
+              onEdit: (value) => {
+                setDirty(true);
+                setText(value);
+              },
+              onSave: () => saveDraft(false),
+              onBack: () => leave(() => setView('world')),
+              onOutline: () => leave(() => setView('outline')),
               onOpenChapter: openStory,
-              onNewChapter: () => setDialogOpen(true),
-              onSaved: onReload,
+              onNewChapter: () => leave(() => setDialogOpen(true)),
             })),
           h('section', { className: 'dsn-page' },
             h(OutlinePage, {
@@ -1097,6 +1145,25 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               },
               notify,
             }))),
+        pendingAction
+          ? h(LeaveConfirm, {
+            onCancel: () => setPendingAction(null),
+            onDiscard: () => {
+              const action = pendingAction;
+              setPendingAction(null);
+              setDirty(false);
+              setText(stored);
+              action();
+            },
+            onSave: async () => {
+              const action = pendingAction;
+              const saved = await saveDraft(true);
+              if (!saved) return;
+              setPendingAction(null);
+              action();
+            },
+          })
+          : null,
         dialogOpen
           ? h(NewChapterDialog, {
             detail,
@@ -1116,7 +1183,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [projectId, setProjectId] = useState(null);
       const [detail, setDetail] = useState(null);
       const [toast, setToast] = useToast();
-      const close = useCallback(() => setOverlayOpen(false), []);
+      const leaveGuard = useRef(null);
+      const registerLeaveGuard = useCallback((guard) => {
+        leaveGuard.current = guard;
+      }, []);
+      /** Every way out of the studio asks the workspace first. */
+      const requestLeave = useCallback((proceed) => {
+        const guard = leaveGuard.current;
+        if (typeof guard === 'function') {
+          guard(proceed);
+          return;
+        }
+        proceed();
+      }, []);
+      const close = useCallback(() => requestLeave(() => setOverlayOpen(false)), [requestLeave]);
 
       const loadBoot = useCallback(async () => {
         try {
@@ -1164,11 +1244,11 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             ? h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
-              onClick: () => {
+              onClick: () => requestLeave(() => {
                 setProjectId(null);
                 setDetail(null);
                 loadBoot();
-              },
+              }),
             }, '← 作品列表')
             : h('div', { className: 'dsn-title' }, '小说工坊'),
           projectId && detail ? h('div', { className: 'dsn-sub' }, detail.title) : null,
@@ -1183,18 +1263,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 h(ProjectsPage, { boot, workspace, onOpen: openProject, onReload: loadBoot }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入作品…')
-                : h(ProjectWorkspace, { key: detail.projectId, detail, onReload: reloadDetail, notify })));
+                : h(ProjectWorkspace, {
+                  key: detail.projectId,
+                  detail,
+                  onReload: reloadDetail,
+                  notify,
+                  onRegisterLeaveGuard: registerLeaveGuard,
+                })));
     }
 
     function StudioOverlay({ workspace }) {
       const open = useOverlayOpen();
       if (!open) return null;
-      return h('div', {
-        className: 'dsn-overlay',
-        onMouseDown: (event) => {
-          if (event.target === event.currentTarget) setOverlayOpen(false);
-        },
-      }, h(StudioApp, { workspace }));
+      // No backdrop-click close: leaving with unsaved chapter text goes through
+      // the 关闭 button, which asks first.
+      return h('div', { className: 'dsn-overlay' }, h(StudioApp, { workspace }));
     }
 
     /* ---------------------------------------------------------------- apply */
