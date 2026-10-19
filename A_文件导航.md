@@ -27,3 +27,4 @@ selfcheck.mjs	|	2026-10-20 03:55	|	新增接口自检脚本
 selfcheck-generate.mjs	|	2026-10-20 03:56	|	新增生成自检脚本
 selfcheck-snapshot.mjs	|	2026-10-20 03:58	|	新增快照自检脚本
 client.js	|	2026-10-20 04:02	|	故事页同步生成后的正文；切换作品重置工作区状态
+client.js	|	2026-10-20 04:08	|	侧栏小说工坊按钮底色改为淡蓝（state-business-tertiary，明暗主题自适应）

@@ -97,9 +97,12 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .dsn-launch{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;
-  border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary);
+  border:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 28%, transparent);
+  background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-label-primary);
   font:inherit;font-size:12px;cursor:pointer}
-.dsn-launch:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+.dsn-launch:hover{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, var(--dsw-alias-state-business-tertiary));
+  border-color:color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent)}
+.dsn-launch:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}
 .dsn-launch svg{width:14px;height:14px;display:block}
 .dsn-overlay{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;
   background:rgba(0,0,0,.3);pointer-events:auto;padding:24px}
