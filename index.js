@@ -11,7 +11,7 @@
  * UI and watch (or correct) the very same agent the generator drives.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,6 +63,130 @@ async function readProject(root, projectId) {
     throw httpError(404, `作品不存在: ${projectId}`);
   }
   return migrateProject(JSON.parse(text));
+}
+
+/* ------------------------------------------------- chapter files on disk */
+
+/** A filename-safe piece of text (Windows forbids \ / : * ? " < > |). */
+function safeSegment(value, fallback) {
+  const text = String(value === undefined || value === null ? '' : value)
+    .replace(/[\\/:*?"<>|\r\n\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text === '' ? fallback : text.slice(0, 80);
+}
+
+/** Where one chapter lives inside the project's own working directory. */
+function chapterPaths(project, chapter) {
+  const number = String((Number(chapter.index) || 0) + 1).padStart(2, '0');
+  return {
+    dir: project.cwd,
+    file: join(project.cwd, `第${number}章 ${safeSegment(chapter.title, '未命名')}.md`),
+  };
+}
+
+function snapshotPaths(project, snapshot) {
+  const day = String(Math.max(0, Math.round(Number(snapshot.day) || 0))).padStart(3, '0');
+  return {
+    dir: join(project.cwd, '世界快照'),
+    file: join(project.cwd, '世界快照', `第${day}天.md`),
+  };
+}
+
+/** Mirror one chapter's prose into the working directory the user picked. */
+async function exportChapter(project, chapter, content) {
+  if (!project || !project.cwd) return;
+  try {
+    const target = chapterPaths(project, chapter);
+    await mkdir(target.dir, { recursive: true });
+    await writeFile(target.file, typeof content === 'string' ? content : (chapter.content || ''), 'utf8');
+  } catch {
+    // A deleted or read-only directory must not fail the save itself.
+  }
+}
+
+async function removeChapterFile(project, chapter) {
+  if (!project || !project.cwd) return;
+  try {
+    await unlink(chapterPaths(project, chapter).file);
+  } catch {
+    // Already gone, or never written.
+  }
+}
+
+/** Write one world snapshot as a readable markdown card. */
+async function exportSnapshot(project, snapshot) {
+  if (!project || !project.cwd) return;
+  try {
+    const target = snapshotPaths(project, snapshot);
+    await mkdir(target.dir, { recursive: true });
+    const lines = [];
+    lines.push(`# 世界快照 · 第 ${snapshot.day} 天`);
+    lines.push('');
+    lines.push(`时间：第 0 天起算的第 ${snapshot.day} 天`);
+    lines.push('');
+    lines.push('## 世界观');
+    lines.push('');
+    lines.push(snapshot.world || '（无）');
+    lines.push('');
+    lines.push('## 角色');
+    lines.push('');
+    for (const character of snapshot.characters || []) {
+      lines.push(`- ${character.name}${character.desc ? `：${character.desc}` : ''}`);
+    }
+    lines.push('');
+    lines.push('## 势力');
+    lines.push('');
+    for (const faction of snapshot.factions || []) {
+      lines.push(`- ${faction.name}${faction.desc ? `：${faction.desc}` : ''}`);
+    }
+    lines.push('');
+    lines.push('## 关系');
+    lines.push('');
+    for (const relation of snapshot.relations || []) lines.push(`- ${relation}`);
+    lines.push('');
+    if (snapshot.summary) {
+      lines.push('## 这段时间的变化');
+      lines.push('');
+      lines.push(snapshot.summary);
+      lines.push('');
+    }
+    await writeFile(target.file, lines.join('\n'), 'utf8');
+  } catch {
+    // Best effort: the JSON record stays the source of truth.
+  }
+}
+
+/**
+ * Keep the working directory in step with the store: write a file for every
+ * chapter, and take a newer file back (the user may have edited it in an
+ * editor) so an external edit is what the next save and generation use.
+ */
+async function syncChapterFiles(project) {
+  if (!project || !project.cwd) return;
+  for (const chapter of project.chapters || []) {
+    const target = chapterPaths(project, chapter);
+    try {
+      const info = await stat(target.file);
+      const updated = Number(chapter.updatedAt) || 0;
+      if (info.mtimeMs > updated + 1000) {
+        const text = await readFile(target.file, 'utf8');
+        if (text !== chapter.content) {
+          chapter.content = text;
+          chapter.wordCount = wordCount(text);
+        }
+      }
+    } catch {
+      await exportChapter(project, chapter, chapter.content);
+    }
+  }
+  for (const snapshot of project.snapshots || []) {
+    try {
+      await stat(snapshotPaths(project, snapshot).file);
+    } catch {
+      await exportSnapshot(project, snapshot);
+    }
+  }
 }
 
 /**
@@ -569,7 +693,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.9',
+    revision: '2026-10-20.10',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -724,7 +848,10 @@ async function saveOutline(root, body) {
   const startDay = Number.isFinite(Number(body.startDay))
     ? Math.max(0, Math.round(Number(body.startDay)))
     : null;
-  return mutateProject(root, projectId, (project) => {
+  let savedProject = null;
+  let savedChapter = null;
+  let renamedFrom = null;
+  const result = await mutateProject(root, projectId, (project) => {
     let chapter = chapterId === '' ? null : project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) {
       chapter = {
@@ -742,14 +869,29 @@ async function saveOutline(root, body) {
         generatedAt: null,
       };
       project.chapters.push(chapter);
+    } else {
+      renamedFrom = { index: chapter.index, title: chapter.title };
     }
     if (title !== '') chapter.title = title;
     chapter.outline = outline;
     chapter.durationDays = outline.durationDays;
     if (chapter.status === 'draft') chapter.status = 'outlined';
     chapter.updatedAt = Date.now();
+    savedProject = project;
+    savedChapter = chapter;
     return { chapter, project: summarize(project) };
   });
+  // A renamed chapter gets its file renamed too, so the folder is not littered
+  // with the previous title.
+  if (savedChapter && (renamedFrom === null
+    ? false
+    : renamedFrom.title !== savedChapter.title || renamedFrom.index !== savedChapter.index)) {
+    await removeChapterFile(savedProject, renamedFrom);
+  }
+  if (savedChapter && String(savedChapter.content || '').trim() !== '') {
+    await exportChapter(savedProject, savedChapter, savedChapter.content);
+  }
+  return result;
 }
 
 async function saveChapter(root, body) {
@@ -757,7 +899,9 @@ async function saveChapter(root, body) {
   const chapterId = asText(body.chapterId);
   const content = typeof body.content === 'string' ? body.content : '';
   const title = asText(body.title);
-  return mutateProject(root, projectId, (project) => {
+  let savedProject = null;
+  let savedChapter = null;
+  const result = await mutateProject(root, projectId, (project) => {
     const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
     chapter.content = content;
@@ -765,8 +909,12 @@ async function saveChapter(root, body) {
     if (title !== '') chapter.title = title;
     chapter.status = chapter.generatedAt ? 'edited' : 'edited';
     chapter.updatedAt = Date.now();
+    savedProject = project;
+    savedChapter = chapter;
     return { chapter: { ...chapter, content: undefined }, project: summarize(project) };
   });
+  await exportChapter(savedProject, savedChapter, content);
+  return result;
 }
 
 /** Display name the plugin gives the sidebar workspace that holds its sessions. */
@@ -880,6 +1028,7 @@ function registerSnapshot(ctx, root, registry, projectId, day) {
       draft.snapshots.push(snapshot);
       return snapshot;
     });
+    await exportSnapshot(project, snapshot);
     return { snapshot };
   });
 }
@@ -907,6 +1056,7 @@ function startGenerate(ctx, root, registry, body) {
       target.updatedAt = Date.now();
       return { ...target, content: undefined };
     });
+    await exportChapter(project, saved, content);
     const window = chapterWindow(project, chapter);
     let snapshotJobId = null;
     if (snapshotDue(project, window.end)) {
@@ -1022,6 +1172,8 @@ function startCompose(ctx, root, registry, body) {
     });
 
     const after = await readProject(root, projectId);
+    const written = after.chapters.find((item) => item.chapterId === chapterId);
+    if (written) await exportChapter(after, written, content);
     const window = chapterWindow(after, target);
     let snapshotJobId = null;
     if (snapshotDue(after, window.end)) {
@@ -1090,7 +1242,9 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
   if (method === 'GET') {
     if (path === '/bootstrap') return bootstrap(ctx, root);
     if (path === '/project') {
-      return withTimelineFacts(await readProject(root, String(url.searchParams.get('projectId') || '')));
+      const project = await readProject(root, String(url.searchParams.get('projectId') || ''));
+      await syncChapterFiles(project);
+      return withTimelineFacts(project);
     }
     if (path === '/job') {
       const job = registry.get(String(url.searchParams.get('id') || ''));

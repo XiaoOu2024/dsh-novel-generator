@@ -23,7 +23,12 @@ DSH 的常驻插件：在时间线上写小说。每个作品绑定一个普通�
 
 ## 数据与接口
 
-- 数据目录：`<DSH_HOME>/novel-studio/projects/<项目id>/project.json`（`DSH_HOME` 缺省为 `~/.dsh`）。可用插件行的 `dataDir` 配置覆盖。
+- **索引文件**：`<DSH_HOME>/novel-studio/projects/<项目id>/project.json`（`DSH_HOME` 缺省为 `~/.dsh`，本机即 `C:\Users\Admin\.dsh\novel-studio`）。时间线、大纲、快照字段都记在这里；`dataDir` 配置可改这块的位置。
+- **正文与世界快照同时写到你在创建作品时选的工作目录**：
+  - 章节正文：`<工作目录>/第NN章 章节名.md`
+  - 世界快照：`<工作目录>/世界快照/第NNN天.md`（可读的 markdown 卡片：世界观 / 角色 / 势力 / 关系 / 阶段变化）
+  - 每次保存正文、生成章节、保存大纲（改标题）都会同步写文件；改标题会顺手删掉旧文件名。
+  - 若你在编辑器里直接改这些 `.md` 且比插件记录的更新时间更晚，下次打开作品会以文件内容为准。
 - HTTP 接口前缀：`/dsh-novel-studio/api`，只接受本机页面同源请求。
 - 生成、推演、快照都是异步任务：`POST /generate`、`POST /compose`、`POST /deduce`、`POST /snapshot/refresh` 返回 `jobId`，再由 `GET /job?id=` 轮询。
 - `timeline.cursor` 现在以「天」为单位；旧数据（按格计数）在首次读取时自动换算一次并标记 `cursorUnit: "day"`。
