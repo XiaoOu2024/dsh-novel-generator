@@ -634,7 +634,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ---------------------------------------------------------- outline page */
 
-    function OutlinePage({ detail, chapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm }) {
+    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -740,6 +740,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       /** 自动推演: deduce synopsis, title and the whole chapter, then save. */
       const deduce = useCallback(() => {
+        if (isFirstChapter) {
+          notify('第一章没有世界快照和上一章可依据，自动推演不可用', 'error');
+          return;
+        }
         requestConfirm({
           title: '自动推演会覆盖现有内容',
           text: '将重新生成故事梗概、章节名称和整章正文，当前的大纲与已写的正文都会被打断覆盖，生成完直接保存。确定继续吗？',
@@ -803,8 +807,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('button', {
             className: 'dsn-btn ghost',
             type: 'button',
-            disabled: !complete || saving || Boolean(generating || composing),
-            title: '按当前字数与时间长度，重新推演梗概、章节名称与整章正文',
+            disabled: !complete || isFirstChapter || saving || Boolean(generating || composing),
+            title: isFirstChapter
+              ? '第一章没有世界快照和上一章可依据，自动推演不可用；请自己写梗概后生成'
+              : '按当前字数与时间长度，重新推演梗概、章节名称与整章正文',
             onClick: deduce,
           }, composing ? '推演中…' : '自动推演')),
         h('div', { className: 'dsn-form' },
@@ -899,6 +905,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         && Number(form.maxWords) >= Number(form.minWords)
         && Number(form.durationDays) >= 1;
 
+      // A work's first chapter has no snapshot and no previous chapter to
+      // deduce from, so auto-deduction stays off for it.
+      const isFirstChapter = (detail.chapters || []).length === 0;
+
       const patch = useCallback((field, value) => {
         setForm((current) => ({ ...current, [field]: value }));
       }, []);
@@ -931,6 +941,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [detail.projectId, form, startDay, onCreated]);
 
       const compose = useCallback(async () => {
+        if (isFirstChapter) {
+          setError('第一章没有可依据的世界快照和上一章，自动推演不可用');
+          return;
+        }
         setError('');
         try {
           const started = await api('/compose', {
@@ -1006,7 +1020,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 value: form.durationDays,
                 onChange: (event) => patch('durationDays', Number(event.target.value)),
               })),
-            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
+            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null,
+            isFirstChapter
+              ? h('div', { className: 'dsn-hint span2' }, '这是作品的第一章：没有世界快照和上一章可依据，自动推演不可用。先创建空章节，再自己写梗概生成。')
+              : null),
           h('div', { className: 'dsn-dialog-foot' },
             composing ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), job.message || '正在自动推演…') : null,
             h('div', { className: 'dsn-spacer' }),
@@ -1019,7 +1036,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('button', {
               className: 'dsn-btn primary',
               type: 'button',
-              disabled: !complete || busy || composing,
+              disabled: !complete || busy || composing || isFirstChapter,
+              title: isFirstChapter ? '第一章没有可依据的快照与上一章，自动推演不可用' : '',
               onClick: compose,
             }, composing ? '自动推演中…' : '自动推演'))));
     }
@@ -1252,6 +1270,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               notify,
               onRegisterGuard: registerOutlineGuard,
               requestConfirm: setConfirmRequest,
+              isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
         confirmRequest
           ? h(ConfirmDialog, {

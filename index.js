@@ -569,7 +569,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.6',
+    revision: '2026-10-20.7',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -887,6 +887,14 @@ function startCompose(ctx, root, registry, body) {
       ? null
       : (project.chapters || []).find((entry) => entry.chapterId === existingId) || null;
     if (existingId !== '' && !existing) throw httpError(404, `章节不存在: ${existingId}`);
+
+    // The first chapter of a work has no snapshot and no previous chapter, so
+    // there is nothing to deduce from: this stays refused, not just hidden.
+    const firstChapter = [...(project.chapters || [])]
+      .sort((a, b) => a.startDay - b.startDay || a.index - b.index)[0] || null;
+    if (existing ? existing.chapterId === (firstChapter && firstChapter.chapterId) : firstChapter === null) {
+      throw httpError(409, '第一章没有可依据的世界快照和上一章，自动推演不可用');
+    }
 
     const startDay = existing
       ? existing.startDay
