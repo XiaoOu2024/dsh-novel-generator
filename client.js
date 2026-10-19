@@ -131,7 +131,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-note{margin:0;padding:8px 12px;border-radius:10px;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1)}
 .dsn-empty{padding:32px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:13px}
-.dsn-toast{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:5;
+.dsn-toast{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:30;
   padding:8px 16px;border-radius:999px;font-size:12px;border-left:3px solid var(--dsw-alias-state-success-primary);
   color:var(--dsw-alias-toast-label);background:var(--dsw-alias-toast-bg);box-shadow:0 8px 24px rgba(0,0,0,.24)}
 .dsn-toast.error{border-left-color:var(--dsw-alias-state-error-primary)}
@@ -631,7 +631,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ---------------------------------------------------------- outline page */
 
-    function OutlinePage({ detail, chapter, onBack, onSaved, notify }) {
+    function OutlinePage({ detail, chapter, onBack, onSaved, notify, onRegisterGuard }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -643,15 +643,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const [form, setForm] = useState(buildForm);
       const [savedAt, setSavedAt] = useState(chapter && chapter.outline ? chapter.outline.savedAt : 0);
+      const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
-      const [message, setMessage] = useState('');
       const [job, setJob] = useJob();
       const chapterId = chapter ? chapter.chapterId : null;
 
       useEffect(() => {
         setForm(buildForm());
         setSavedAt(chapter && chapter.outline ? chapter.outline.savedAt : 0);
-        setMessage('');
+        setDirty(false);
         setJob(null);
       }, [chapterId]);
 
@@ -664,11 +664,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const patch = useCallback((field, value) => {
         setForm((current) => ({ ...current, [field]: value }));
         setSavedAt(0);
+        setDirty(true);
       }, []);
 
-      const save = useCallback(async () => {
+      const submit = useCallback(async (silent) => {
+        if (!complete) {
+          notify('梗概还没有达到最低字数，或字数与时间长度没填完', 'error');
+          return false;
+        }
         setSaving(true);
-        setMessage('');
         try {
           const result = await api('/outline/save', {
             projectId: detail.projectId,
@@ -683,17 +687,40 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             },
           });
           setSavedAt(Date.now());
-          setMessage('大纲已保存，可以生成章节故事了');
+          setDirty(false);
+          if (silent !== true) notify('章节大纲已保存', 'success');
           await onSaved(result.chapter.chapterId);
+          return true;
         } catch (error) {
-          setMessage(messageOf(error));
+          notify(messageOf(error), 'error');
+          return false;
         } finally {
           setSaving(false);
         }
-      }, [detail.projectId, chapter, form, onSaved]);
+      }, [complete, detail.projectId, chapter, form, onSaved, notify]);
+
+      // The workspace asks this page before any navigation discards its edits.
+      const guardRef = useRef(null);
+      guardRef.current = {
+        dirty,
+        save: () => submit(true),
+        reset: () => {
+          setForm(buildForm());
+          setSavedAt(chapter && chapter.outline ? chapter.outline.savedAt : 0);
+          setDirty(false);
+        },
+      };
+      useEffect(() => {
+        if (typeof onRegisterGuard !== 'function') return undefined;
+        onRegisterGuard({
+          isDirty: () => guardRef.current.dirty,
+          save: () => guardRef.current.save(),
+          reset: () => guardRef.current.reset(),
+        });
+        return () => onRegisterGuard(null);
+      }, [onRegisterGuard]);
 
       const startJob = useCallback(async (path) => {
-        setMessage('');
         try {
           const started = await api(path, {
             projectId: detail.projectId,
@@ -701,21 +728,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           });
           setJob(started);
         } catch (error) {
-          setMessage(messageOf(error));
+          notify(messageOf(error), 'error');
         }
-      }, [detail.projectId, chapter, setJob]);
+      }, [detail.projectId, chapter, setJob, notify]);
 
       const generating = job && job.state === 'running' && job.kind === 'generate';
 
       useEffect(() => {
         if (!job) return;
         if (job.kind === 'generate' && job.state === 'done') {
-          setMessage('章节生成成功');
           notify('章节生成成功', 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
         if (job.state === 'error') {
-          setMessage(job.error || '任务失败');
           notify(job.error || '任务失败', 'error');
         }
       }, [job ? job.jobId : null, job ? job.state : null]);
@@ -780,10 +805,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }))),
         h('div', { className: 'dsn-foot' },
           h('div', { className: `dsn-hint${complete ? '' : ' warn'}` },
-            message || (complete ? '设定完整，可以保存' : '梗概达到最低字数并填完其他项后可以保存')),
+            complete ? (savedAt ? '设定完整，可以生成章节故事' : '设定完整，可以保存') : '梗概达到最低字数并填完其他项后可以保存'),
           generating ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), '正在生成章节故事…') : null,
           h('div', { className: 'dsn-spacer' }),
-          h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving, onClick: save },
+          h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving, onClick: () => submit(false) },
             saving ? '保存中…' : '保存'),
           h('button', {
             className: 'dsn-btn primary',
@@ -941,12 +966,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* --------------------------------------------------------- leave confirm */
 
-    /** Asked whenever unsaved chapter text would be left behind. */
-    function LeaveConfirm({ onCancel, onDiscard, onSave }) {
+    /** Asked whenever unsaved chapter text or outline edits would be left behind. */
+    function LeaveConfirm({ what, onCancel, onDiscard, onSave }) {
       return h('div', { className: 'dsn-dialog-backdrop' },
         h('div', { className: 'dsn-dialog', style: { width: 'min(420px, calc(100% - 48px))' } },
           h('div', { className: 'dsn-dialog-head' },
-            h('div', { className: 'dsn-title' }, '这一章还没有保存'),
+            h('div', { className: 'dsn-title' }, `${what || '这一章'}还没有保存`),
             h('div', { className: 'dsn-spacer' })),
           h('div', { className: 'dsn-dialog-body', style: { gridTemplateColumns: '1fr' } },
             h('div', { className: 'dsn-text', style: { fontSize: 12 } },
@@ -968,7 +993,11 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
-      const [pendingAction, setPendingAction] = useState(null);
+      const [pendingLeave, setPendingLeave] = useState(null);
+      const outlineGuard = useRef({ isDirty: () => false, save: async () => true, reset: () => {} });
+      const registerOutlineGuard = useCallback((guard) => {
+        outlineGuard.current = guard || { isDirty: () => false, save: async () => true, reset: () => {} };
+      }, []);
       const chapters = useMemo(
         () => [...(detail.chapters || [])].sort((a, b) => a.startDay - b.startDay || a.index - b.index),
         [detail.chapters],
@@ -1007,14 +1036,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         }
       }, [chapter, detail.projectId, text, onReload, notify]);
 
-      /** Run a navigation step, asking about unsaved text first. */
+      /** Run a navigation step, asking about the active page's unsaved edits. */
       const leave = useCallback((action) => {
-        if (!dirty) {
+        const unsaved = view === 'outline' ? outlineGuard.current.isDirty() : dirty;
+        if (!unsaved) {
           action();
           return;
         }
-        setPendingAction(() => action);
-      }, [dirty]);
+        setPendingLeave({ action, page: view });
+      }, [view, dirty]);
 
       // Leaving the whole studio or the project goes through the same gate.
       const leaveRef = useRef(leave);
@@ -1138,28 +1168,36 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h(OutlinePage, {
               detail,
               chapter,
-              onBack: () => setView(chapter ? 'story' : 'world'),
+              onBack: () => leave(() => setView(chapter ? 'story' : 'world')),
               onSaved: async (id) => {
                 if (id) setChapterId(id);
                 await onReload();
               },
               notify,
+              onRegisterGuard: registerOutlineGuard,
             }))),
-        pendingAction
+        pendingLeave
           ? h(LeaveConfirm, {
-            onCancel: () => setPendingAction(null),
+            what: pendingLeave.page === 'outline' ? '这份章节大纲' : '这一章的正文',
+            onCancel: () => setPendingLeave(null),
             onDiscard: () => {
-              const action = pendingAction;
-              setPendingAction(null);
-              setDirty(false);
-              setText(stored);
+              const { action, page } = pendingLeave;
+              setPendingLeave(null);
+              if (page === 'outline') {
+                outlineGuard.current.reset();
+              } else {
+                setDirty(false);
+                setText(stored);
+              }
               action();
             },
             onSave: async () => {
-              const action = pendingAction;
-              const saved = await saveDraft(true);
+              const { action, page } = pendingLeave;
+              const saved = page === 'outline'
+                ? await outlineGuard.current.save()
+                : await saveDraft(true);
               if (!saved) return;
-              setPendingAction(null);
+              setPendingLeave(null);
               action();
             },
           })
