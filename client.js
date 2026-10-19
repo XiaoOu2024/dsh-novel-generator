@@ -179,6 +179,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-marks{position:relative;height:9px;margin:0 9px}
 .dsn-mark{position:absolute;top:1px;width:6px;height:6px;margin-left:-3px;border-radius:50%;
   background:var(--dsw-alias-state-business-primary);opacity:.65}
+.dsn-mark.next{background:transparent;border:1.5px dashed var(--dsw-alias-state-business-primary);opacity:.9;
+  width:8px;height:8px;margin-left:-4px;top:0}
 .dsn-ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--dsw-alias-label-secondary);padding:0 2px}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
@@ -438,13 +440,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /* -------------------------------------------------------------- timeline */
 
     /**
-     * The timeline spans day 0 through the newest world snapshot: nothing exists
-     * beyond the last snapshot, so the slider cannot point there either.
+     * The timeline runs from day 0 to the newest world snapshot, plus however
+     * far the story has been written past it — the next snapshot point lives in
+     * that stretch, so the slider has to reach it.
      */
     function Timeline({ detail, unitDays, day, onChange }) {
       const snapshots = detail.snapshots || [];
-      const latest = snapshots.length ? snapshots[snapshots.length - 1].day : 0;
-      const max = Math.max(0, latest);
+      const facts = detail.timelineFacts || {};
+      const latest = facts.latestSnapshotDay !== undefined
+        ? facts.latestSnapshotDay
+        : (snapshots.length ? snapshots[snapshots.length - 1].day : 0);
+      const storyEnd = facts.storyEnd !== undefined ? facts.storyEnd : latest;
+      const nextDay = facts.nextSnapshotDay !== undefined ? facts.nextSnapshotDay : latest + unitDays;
+      const max = Math.max(0, latest, storyEnd);
       const ticks = [];
       const stride = Math.max(1, Math.round(max / 6));
       for (let tick = 0; tick <= max; tick += stride) ticks.push(tick);
@@ -457,7 +465,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-sub' },
             max === 0
               ? '还没有世界快照'
-              : `第 ${day} / ${max} 天 · 已写入 ${snapshots.length} 份快照`),
+              : `第 ${day} / ${max} 天 · 已写入 ${snapshots.length} 份快照${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
           h('div', { className: 'dsn-spacer' }),
           h('div', { className: 'dsn-units' }, UNIT_CHOICES.map((unit) => h('button', {
             key: unit,
@@ -478,12 +486,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             onChange: (event) => onChange(unitDays, Number(event.target.value)),
           }),
           max > 0
-            ? h('div', { className: 'dsn-marks' }, marks.map((mark) => h('span', {
-              key: mark,
-              className: 'dsn-mark',
-              style: { left: `${(mark / max) * 100}%` },
-              title: `快照 · ${dateForDay(detail, mark)}`,
-            })))
+            ? h('div', { className: 'dsn-marks' },
+              marks.map((mark) => h('span', {
+                key: `snap-${mark}`,
+                className: 'dsn-mark',
+                style: { left: `${(mark / max) * 100}%` },
+                title: `快照 · ${dateForDay(detail, mark)}`,
+              })),
+              nextDay > latest && nextDay <= max
+                ? h('span', {
+                  key: 'next',
+                  className: 'dsn-mark next',
+                  style: { left: `${(nextDay / max) * 100}%` },
+                  title: `下一个快照点 · 第 ${nextDay} 天（${dateForDay(detail, nextDay)}）`,
+                })
+                : null)
             : null),
         h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, dateForDay(detail, tick)))),
         max === 0
@@ -493,17 +510,23 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------ world page */
 
-    function WorldPage({ detail, onTimeline, onEnterStory, onRefreshSnapshot, snapshotBusy }) {
+    function WorldPage({ detail, onTimeline, onEnterStory, onRefreshSnapshot, snapshotBusy, requestConfirm }) {
       const snapshots = detail.snapshots || [];
-      const latest = snapshots.length ? snapshots[snapshots.length - 1].day : 0;
+      const facts = detail.timelineFacts || {};
+      const latest = facts.latestSnapshotDay !== undefined
+        ? facts.latestSnapshotDay
+        : (snapshots.length ? snapshots[snapshots.length - 1].day : 0);
+      const storyEnd = facts.storyEnd !== undefined ? facts.storyEnd : latest;
+      const nextDay = facts.nextSnapshotDay !== undefined ? facts.nextSnapshotDay : latest + 30;
+      const max = Math.max(0, latest, storyEnd);
       const [unitDays, setUnitDays] = useState(detail.timeline.unitDays || 30);
-      const [day, setDay] = useState(Math.min(Math.max(0, detail.timeline.cursor || 0), latest));
+      const [day, setDay] = useState(Math.min(Math.max(0, detail.timeline.cursor || 0), max));
       const commitTimer = useRef(null);
 
       useEffect(() => {
         setUnitDays(detail.timeline.unitDays || 30);
-        setDay(Math.min(Math.max(0, detail.timeline.cursor || 0), latest));
-      }, [detail.projectId, detail.timeline.unitDays, detail.timeline.cursor, latest]);
+        setDay(Math.min(Math.max(0, detail.timeline.cursor || 0), max));
+      }, [detail.projectId, detail.timeline.unitDays, detail.timeline.cursor, max]);
 
       useEffect(() => () => {
         if (commitTimer.current) clearTimeout(commitTimer.current);
@@ -518,6 +541,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const snapshot = snapshotAt(detail, day);
       const chapters = detail.chapters || [];
+      // The button only exists where the story has actually reached the next
+      // snapshot point the project's own unit defines.
+      const canSnapshot = chapters.length > 0 && storyEnd >= nextDay && day >= nextDay;
       const nearest = useMemo(() => {
         if (chapters.length === 0) return null;
         let best = chapters[0];
@@ -532,18 +558,28 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         return best;
       }, [chapters, day]);
 
+      const askSnapshot = useCallback(() => {
+        requestConfirm({
+          title: '是否为当前时间生成世界快照？',
+          text: `将为第 ${day} 天（${dateForDay(detail, day)}）生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。`,
+          confirmLabel: '生成快照',
+          action: () => onRefreshSnapshot(day),
+        });
+      }, [requestConfirm, day, detail, onRefreshSnapshot]);
+
       return h(React.Fragment, null,
         h('div', { className: 'dsn-pagehead' },
           h('div', { className: 'dsn-title' }, detail.title),
           h('div', { className: 'dsn-sub' }, detail.cwd),
           h('div', { className: 'dsn-spacer' }),
-          h('button', {
-            className: 'dsn-btn ghost',
-            type: 'button',
-            disabled: snapshotBusy || chapters.length === 0,
-            onClick: () => onRefreshSnapshot(day),
-            title: '用最后一份快照与这段时间的章节梗概，立即结算一份新快照',
-          }, snapshotBusy ? '结算中…' : '结算世界快照'),
+          canSnapshot
+            ? h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              disabled: snapshotBusy,
+              onClick: askSnapshot,
+            }, snapshotBusy ? '生成中…' : `生成世界快照 · 第 ${day} 天`)
+            : null,
           h('button', { className: 'dsn-btn primary', type: 'button', onClick: () => onEnterStory(day) },
             nearest ? `进入故事 · 第 ${nearest.index + 1} 章` : '进入故事')),
         h(Timeline, { detail, unitDays, day, onChange: change }),
@@ -1239,6 +1275,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onEnterStory: enterStory,
               onRefreshSnapshot: refreshSnapshot,
               snapshotBusy,
+              requestConfirm: setConfirmRequest,
             })),
           h('section', { className: 'dsn-page' },
             h(StoryPage, {

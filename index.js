@@ -569,7 +569,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.7',
+    revision: '2026-10-20.8',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -788,6 +788,28 @@ function lastChapterEnd(project) {
     end = Math.max(end, chapterWindow(project, chapter).end);
   }
   return end;
+}
+
+/**
+ * Story-time facts the Client renders the timeline from: where the last snapshot
+ * sits, how far the story has been written, and the day the next snapshot falls
+ * due under the project's own unit.
+ */
+function withTimelineFacts(project) {
+  const snapshots = project.snapshots || [];
+  const last = snapshots.length ? snapshots[snapshots.length - 1] : null;
+  const unitDays = Math.max(1, project.timeline.unitDays || 30);
+  const latestSnapshotDay = last ? last.day : 0;
+  return {
+    ...project,
+    timelineFacts: {
+      unitDays,
+      latestSnapshotDay,
+      storyEnd: lastChapterEnd(project),
+      nextSnapshotDay: latestSnapshotDay + unitDays,
+      snapshotDays: snapshots.map((snapshot) => snapshot.day),
+    },
+  };
 }
 
 /** The chapter this one follows, by start day. */
@@ -1036,7 +1058,9 @@ function registerRoutes(ctx, root, registry) {
 async function dispatch(ctx, root, registry, method, path, url, body) {
   if (method === 'GET') {
     if (path === '/bootstrap') return bootstrap(ctx, root);
-    if (path === '/project') return readProject(root, String(url.searchParams.get('projectId') || ''));
+    if (path === '/project') {
+      return withTimelineFacts(await readProject(root, String(url.searchParams.get('projectId') || '')));
+    }
     if (path === '/job') {
       const job = registry.get(String(url.searchParams.get('id') || ''));
       if (!job) throw httpError(404, '任务不存在或已过期');
