@@ -180,6 +180,16 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-mark.next{background:transparent;border:1.5px dashed var(--dsw-alias-state-business-primary);opacity:.9;
   width:8px;height:8px;margin-left:-4px;top:0}
 .dsn-ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--dsw-alias-label-secondary);padding:0 2px}
+.dsn-chart-wrap{flex:0 0 auto;border-top:1px solid var(--dsw-alias-border-l1);
+  background:var(--dsw-alias-bg-layer-1);padding:8px 16px 10px}
+.dsn-chart-head{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
+.dsn-chart{display:block;width:100%;height:auto}
+.dsn-chart .grid{stroke:var(--dsw-alias-border-l1);stroke-width:1}
+.dsn-chart .axis{fill:var(--dsw-alias-label-secondary);font-size:10px}
+.dsn-chart .line{fill:none;stroke:var(--dsw-alias-state-business-primary);stroke-width:2;
+  stroke-linejoin:round;stroke-linecap:round}
+.dsn-chart .dot{fill:var(--dsw-alias-state-business-primary);stroke:var(--dsw-alias-bg-layer-1);stroke-width:1.5}
+.dsn-chart .snap{stroke:var(--dsw-alias-state-warn-primary);stroke-width:1;stroke-dasharray:5 4}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
 .dsn-card{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);
@@ -635,7 +645,96 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 key: index,
                 className: 'dsn-entry',
               }, h('span', null, relation))))
-              : h('div', { className: 'dsn-muted' }, '暂无'))));
+              : h('div', { className: 'dsn-muted' }, '暂无'))),
+        h(ChapterChart, { detail }));
+    }
+
+    /* ----------------------------------------------------------- chapter chart */
+
+    /**
+     * Story time per chapter: x is the chapter's position, y is the day the
+     * chapter starts on. Hand-drawn SVG so the panel owns no chart library.
+     */
+    function ChapterChart({ detail }) {
+      const chapters = useMemo(() => [...(detail.chapters || [])]
+        .sort((a, b) => a.startDay - b.startDay || a.index - b.index), [detail.chapters]);
+
+      if (chapters.length === 0) {
+        return h('div', { className: 'dsn-chart-wrap' },
+          h('div', { className: 'dsn-hint' }, '章节时间曲线：还没有章节，生成第一章后这里会画出每章在故事时间里的位置。'));
+      }
+
+      const width = 1000;
+      const height = 152;
+      const pad = { left: 52, right: 18, top: 14, bottom: 24 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const dayOf = (chapter) => Math.max(0, Number(chapter.startDay) || 0);
+      const lastDay = dayOf(chapters[chapters.length - 1]);
+      const maxDay = Math.max(1, lastDay);
+      const xFor = (index) => pad.left + (chapters.length === 1
+        ? plotWidth / 2
+        : (index / (chapters.length - 1)) * plotWidth);
+      const yFor = (value) => pad.top + (1 - value / maxDay) * plotHeight;
+      const yTicks = [...new Set([0, Math.round(maxDay / 2), maxDay])];
+      const labelStride = Math.max(1, Math.ceil(chapters.length / 10));
+      const lastSnapshotDay = detail.timelineFacts ? detail.timelineFacts.latestSnapshotDay : 0;
+      const points = chapters.map((chapter, index) => `${xFor(index)},${yFor(dayOf(chapter))}`).join(' ');
+
+      return h('div', { className: 'dsn-chart-wrap' },
+        h('div', { className: 'dsn-chart-head' },
+          h('span', { className: 'dsn-label' }, '章节时间曲线'),
+          h('span', { className: 'dsn-hint' }, `纵轴：章节在故事里的天数 · 横轴：第几章 · 共 ${chapters.length} 章`)),
+        h('svg', { className: 'dsn-chart', viewBox: `0 0 ${width} ${height}`, role: 'img' },
+          yTicks.map((tick) => h('g', { key: `y-${tick}` },
+            h('line', {
+              className: 'grid',
+              x1: pad.left,
+              x2: width - pad.right,
+              y1: yFor(tick),
+              y2: yFor(tick),
+            }),
+            h('text', {
+              className: 'axis',
+              x: pad.left - 8,
+              y: yFor(tick) + 3,
+              textAnchor: 'end',
+            }, `${tick} 天`))),
+          lastSnapshotDay > 0 && lastSnapshotDay <= maxDay
+            ? h('g', null,
+              h('line', {
+                className: 'snap',
+                x1: pad.left,
+                x2: width - pad.right,
+                y1: yFor(lastSnapshotDay),
+                y2: yFor(lastSnapshotDay),
+              }),
+              h('text', {
+                className: 'axis',
+                x: width - pad.right,
+                y: yFor(lastSnapshotDay) - 4,
+                textAnchor: 'end',
+              }, `最新快照 ${lastSnapshotDay} 天`))
+            : null,
+          chapters.length > 1
+            ? h('polyline', { className: 'line', points })
+            : null,
+          chapters.map((chapter, index) => h('g', { key: chapter.chapterId },
+            h('circle', {
+              className: 'dot',
+              cx: xFor(index),
+              cy: yFor(dayOf(chapter)),
+              r: 3.5,
+            },
+            h('title', null, `第 ${index + 1} 章 ${chapter.title || ''} · 第 ${dayOf(chapter)} 天`)),
+            index % labelStride === 0 || index === chapters.length - 1
+              ? h('text', {
+                className: 'axis',
+                x: xFor(index),
+                y: height - 8,
+                textAnchor: 'middle',
+              }, String(index + 1))
+              : null))));
     }
 
     /* ------------------------------------------------------------ story page */
