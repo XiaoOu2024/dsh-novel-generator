@@ -11,9 +11,9 @@
  * UI and watch (or correct) the very same agent the generator drives.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 export const name = 'dsh-novel-studio';
 export const inject = ['webServer'];
@@ -76,30 +76,69 @@ function safeSegment(value, fallback) {
   return text === '' ? fallback : text.slice(0, 80);
 }
 
-/** Where one chapter lives inside the project's own working directory. */
+const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/**
+ * Why a work title cannot become a folder name, or null when it can. The folder
+ * is created inside the user's chosen directory, so the title has to be legal
+ * as a Windows file name.
+ */
+function titleProblem(title) {
+  const text = String(title === undefined || title === null ? '' : title);
+  if (text.trim() === '') return '作品名称不能为空';
+  if (text.length > 60) return '作品名称最多 60 个字符';
+  if (/^[.\s]/.test(text) || /[.\s]$/.test(text)) return '作品名称不能以空格或点开头、结尾';
+  if (/[\\/:*?"<>|]/.test(text)) return '作品名称不能包含 \\ / : * ? " < > |';
+  if (/[\u0000-\u001f]/.test(text)) return '作品名称不能包含控制字符';
+  if (RESERVED_NAMES.test(text.trim())) return '作品名称不能使用 CON、PRN、NUL、COM1 这类系统保留名';
+  return null;
+}
+
+/** Folder holding one work's files, inside the chosen working directory. */
+function projectContentDir(project) {
+  return join(project.cwd, safeSegment(project.title, '未命名作品'));
+}
+
+/** Where one chapter lives inside the work's own folder. */
 function chapterPaths(project, chapter) {
   const number = String((Number(chapter.index) || 0) + 1).padStart(2, '0');
+  const base = projectContentDir(project);
   return {
-    dir: project.cwd,
-    file: join(project.cwd, `第${number}章 ${safeSegment(chapter.title, '未命名')}.md`),
+    dir: base,
+    file: join(base, `第${number}章 ${safeSegment(chapter.title, '未命名')}.md`),
   };
 }
 
 function snapshotPaths(project, snapshot) {
   const day = String(Math.max(0, Math.round(Number(snapshot.day) || 0))).padStart(3, '0');
+  const dir = join(projectContentDir(project), '世界快照');
   return {
-    dir: join(project.cwd, '世界快照'),
-    file: join(project.cwd, '世界快照', `第${day}天.md`),
+    dir,
+    file: join(dir, `第${day}天.md`),
   };
 }
 
-/** Mirror one chapter's prose into the working directory the user picked. */
+/** Delete a file an earlier build wrote straight into the working directory. */
+async function dropLegacyFile(legacyPath, expected) {
+  try {
+    const text = await readFile(legacyPath, 'utf8');
+    if (text === expected) await unlink(legacyPath);
+  } catch {
+    // Not there, or not ours: leave it alone.
+  }
+}
+
+/** Mirror one chapter's prose into the work folder under the chosen directory. */
 async function exportChapter(project, chapter, content) {
   if (!project || !project.cwd) return;
+  const body = typeof content === 'string' ? content : (chapter.content || '');
   try {
     const target = chapterPaths(project, chapter);
     await mkdir(target.dir, { recursive: true });
-    await writeFile(target.file, typeof content === 'string' ? content : (chapter.content || ''), 'utf8');
+    await writeFile(target.file, body, 'utf8');
+    // Earlier builds wrote beside the working directory instead of inside the
+    // work folder; drop that copy, but only when it is byte-identical.
+    await dropLegacyFile(join(project.cwd, basename(target.file)), body);
   } catch {
     // A deleted or read-only directory must not fail the save itself.
   }
@@ -152,6 +191,15 @@ async function exportSnapshot(project, snapshot) {
       lines.push('');
     }
     await writeFile(target.file, lines.join('\n'), 'utf8');
+    // Same one-time move for the snapshot folder the earlier build created
+    // beside the working directory.
+    const body = lines.join('\n');
+    await dropLegacyFile(join(project.cwd, '世界快照', basename(target.file)), body);
+    try {
+      await rmdir(join(project.cwd, '世界快照'));
+    } catch {
+      // Not empty or already gone.
+    }
   } catch {
     // Best effort: the JSON record stays the source of truth.
   }
@@ -693,7 +741,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.10',
+    revision: '2026-10-20.11',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -717,6 +765,9 @@ async function createProject(ctx, root, body) {
   const controller = ctx.get('sessionController');
   if (controller === undefined) throw httpError(503, '当前部署缺少 sessionController 服务，无法创建会话');
   const title = asText(body.title) || '未命名作品';
+  // The title becomes a folder name inside the chosen directory.
+  const titleIssue = titleProblem(title);
+  if (titleIssue !== null) throw httpError(400, titleIssue);
   const cwd = asText(body.cwd);
   if (cwd === '') throw httpError(400, '请先选择作品的工作目录');
   const agentPreset = asText(body.agentPreset) || undefined;

@@ -283,6 +283,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       return [job, setJob];
     }
 
+    const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+    /** The same title rules the Host enforces, so the form can answer first. */
+    function titleProblem(title) {
+      const text = String(title === undefined || title === null ? '' : title);
+      if (text.trim() === '') return '作品名称不能为空';
+      if (text.length > 60) return '作品名称最多 60 个字符';
+      if (/^[.\s]/.test(text) || /[.\s]$/.test(text)) return '作品名称不能以空格或点开头、结尾';
+      if (/[\\/:*?"<>|]/.test(text)) return '作品名称不能包含 \\ / : * ? " < > |';
+      if (/[\u0000-\u001f]/.test(text)) return '作品名称不能包含控制字符';
+      if (RESERVED_NAMES.test(text.trim())) return '作品名称不能使用 CON、PRN、NUL、COM1 这类系统保留名';
+      return null;
+    }
+
     /* -------------------------------------------------------- projects page */
 
     /** Display name of a stored model selection. */
@@ -375,6 +389,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState('');
 
+      // The title becomes a folder name inside the working directory.
+      const effectiveTitle = title.trim() === '' ? '未命名作品' : title;
+      const titleIssue = titleProblem(effectiveTitle);
+
       const groups = (boot.models && boot.models.groups) || [];
       const models = useMemo(() => {
         const group = groups.find((entry) => entry.id === provider);
@@ -441,7 +459,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               value: title,
               placeholder: '例如：长夜将尽',
               onChange: (event) => setTitle(event.target.value),
-            })),
+            }),
+            h('span', { className: `dsn-hint${titleIssue ? ' warn' : ''}` },
+              titleIssue || '会成为工作目录下的文件夹名')),
           h('label', { className: 'dsn-field' },
             h('span', { className: 'dsn-label' }, '工作目录'),
             h('div', { className: 'dsn-path' },
@@ -485,7 +505,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('button', {
               className: 'dsn-btn primary',
               type: 'button',
-              disabled: busy,
+              disabled: busy || Boolean(titleIssue),
+              title: titleIssue || '',
               onClick: create,
             }, busy ? '创建中…' : '创建作品并开会话'))),
 
