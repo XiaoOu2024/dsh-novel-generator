@@ -190,6 +190,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
   stroke-linejoin:round;stroke-linecap:round}
 .dsn-chart .dot{fill:var(--dsw-alias-state-business-primary);stroke:var(--dsw-alias-bg-layer-1);stroke-width:1.5}
 .dsn-chart .snap{stroke:var(--dsw-alias-state-warn-primary);stroke-width:1;stroke-dasharray:5 4}
+.dsn-chart .span{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.22;stroke-linecap:round}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
 .dsn-card{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);
@@ -477,7 +478,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-sub' },
             max === 0
               ? '还没有世界快照'
-              : `第 ${day} / ${max} 天 · 已写入 ${snapshots.length} 份快照${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
+              : `第 ${day} / ${max} 天 · 每 ${unitDays} 天一份快照 · 已写入 ${snapshots.length} 份${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
           h('div', { className: 'dsn-spacer' }),
           h('div', { className: 'dsn-units' },
             h('span', { className: 'dsn-label' }, '快照间隔'),
@@ -489,10 +490,24 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               value: unitText,
               title: '每多少天结算一份世界快照，可从 7 / 15 / 30 / 90 / 180 / 365 里选，也可以直接输入',
               onChange: (event) => {
+                // Typing only edits the text: committing per keystroke would
+                // persist the intermediate values ("1", "18") as the setting.
                 const text = event.target.value;
                 setUnitText(text);
                 const next = Number(text);
-                if (Number.isInteger(next) && next >= 1) onChange(next, day);
+                // A value straight from the candidate list applies at once.
+                if (UNIT_CHOICES.includes(next) && next !== unitDays) onChange(next, day);
+              },
+              onKeyDown: (event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                const next = Number(unitText);
+                if (Number.isInteger(next) && next >= 1) {
+                  setUnitText(String(next));
+                  if (next !== unitDays) onChange(next, day);
+                } else {
+                  setUnitText(String(unitDays));
+                }
               },
               onBlur: () => {
                 const next = Number(unitText);
@@ -554,6 +569,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const max = Math.max(0, latest, storyEnd);
       const [unitDays, setUnitDays] = useState(detail.timeline.unitDays || 30);
       const [day, setDay] = useState(Math.min(Math.max(0, detail.timeline.cursor || 0), max));
+      const [showChart, setShowChart] = useState(true);
       const commitTimer = useRef(null);
 
       useEffect(() => {
@@ -605,6 +621,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-title' }, detail.title),
           h('div', { className: 'dsn-sub' }, detail.cwd),
           h('div', { className: 'dsn-spacer' }),
+          h('button', {
+            className: 'dsn-btn ghost',
+            type: 'button',
+            'aria-pressed': showChart,
+            onClick: () => setShowChart((value) => !value),
+          }, showChart ? '隐藏统计图' : '显示统计图'),
           canSnapshot
             ? h('button', {
               className: 'dsn-btn',
@@ -646,7 +668,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 className: 'dsn-entry',
               }, h('span', null, relation))))
               : h('div', { className: 'dsn-muted' }, '暂无'))),
-        h(ChapterChart, { detail }));
+        showChart ? h(ChapterChart, { detail }) : null);
     }
 
     /* ----------------------------------------------------------- chapter chart */
@@ -669,9 +691,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const pad = { left: 52, right: 18, top: 14, bottom: 24 };
       const plotWidth = width - pad.left - pad.right;
       const plotHeight = height - pad.top - pad.bottom;
-      const dayOf = (chapter) => Math.max(0, Number(chapter.startDay) || 0);
-      const lastDay = dayOf(chapters[chapters.length - 1]);
-      const maxDay = Math.max(1, lastDay);
+      const windows = chapters.map((chapter) => chapterWindow(detail, chapter));
+      const maxDay = Math.max(1, ...windows.map((span) => span.end));
       const xFor = (index) => pad.left + (chapters.length === 1
         ? plotWidth / 2
         : (index / (chapters.length - 1)) * plotWidth);
@@ -679,12 +700,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const yTicks = [...new Set([0, Math.round(maxDay / 2), maxDay])];
       const labelStride = Math.max(1, Math.ceil(chapters.length / 10));
       const lastSnapshotDay = detail.timelineFacts ? detail.timelineFacts.latestSnapshotDay : 0;
-      const points = chapters.map((chapter, index) => `${xFor(index)},${yFor(dayOf(chapter))}`).join(' ');
+      const points = windows.map((span, index) => `${xFor(index)},${yFor(span.start)}`).join(' ');
 
       return h('div', { className: 'dsn-chart-wrap' },
         h('div', { className: 'dsn-chart-head' },
           h('span', { className: 'dsn-label' }, '章节时间曲线'),
-          h('span', { className: 'dsn-hint' }, `纵轴：章节在故事里的天数 · 横轴：第几章 · 共 ${chapters.length} 章`)),
+          h('span', { className: 'dsn-hint' },
+            `纵轴：故事天数 · 横轴：第几章 · 共 ${chapters.length} 章（竖条是该章的时间跨度）`)),
         h('svg', { className: 'dsn-chart', viewBox: `0 0 ${width} ${height}`, role: 'img' },
           yTicks.map((tick) => h('g', { key: `y-${tick}` },
             h('line', {
@@ -716,17 +738,26 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 textAnchor: 'end',
               }, `最新快照 ${lastSnapshotDay} 天`))
             : null,
+          windows.map((span, index) => h('line', {
+            key: `span-${chapters[index].chapterId}`,
+            className: 'span',
+            x1: xFor(index),
+            x2: xFor(index),
+            y1: yFor(span.start),
+            y2: yFor(span.end),
+          })),
           chapters.length > 1
             ? h('polyline', { className: 'line', points })
             : null,
-          chapters.map((chapter, index) => h('g', { key: chapter.chapterId },
+          windows.map((span, index) => h('g', { key: chapters[index].chapterId },
             h('circle', {
               className: 'dot',
               cx: xFor(index),
-              cy: yFor(dayOf(chapter)),
+              cy: yFor(span.start),
               r: 3.5,
             },
-            h('title', null, `第 ${index + 1} 章 ${chapter.title || ''} · 第 ${dayOf(chapter)} 天`)),
+            h('title', null,
+              `第 ${index + 1} 章 ${chapters[index].title || ''} · 第 ${span.start} → ${span.end} 天`)),
             index % labelStride === 0 || index === chapters.length - 1
               ? h('text', {
                 className: 'axis',
