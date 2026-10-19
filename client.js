@@ -1791,12 +1791,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         localeService = ctx.get('locale') || null;
         ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
           name: 'sidebar.footer.action',
-          id: 'dsh-novel-studio-launch',
+          id: 'dsh-novel-generator-launch',
           order: 30,
         }, Launcher));
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({
           name: 'shell.overlay',
-          id: 'dsh-novel-studio-studio',
+          id: 'dsh-novel-generator-studio',
           order: 40,
         }, () => h(StudioOverlay, { workspace: uiWorkspace })));
       },

@@ -98,3 +98,5 @@ cordis.patch.yml	|	2026-10-20 11:20	|	行 id/name 改为 dsh-novel-generator
 index.js	|	2026-10-20 11:20	|	插件名与路由改为 /dsh-novel-generator/api
 client.js	|	2026-10-20 11:20	|	模块 id 与 API 前缀改为 dsh-novel-generator
 README.md	|	2026-10-20 11:20	|	全文改名为 dsh-novel-generator
+client.js	|	2026-10-20 11:30	|	槽位 id 同步为 dsh-novel-generator-*
+package.json	|	2026-10-20 11:30	|	0.1.1
