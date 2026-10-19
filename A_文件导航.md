@@ -42,3 +42,6 @@ index.js	|	2026-10-20 05:20	|	/compose 支持带 chapterId 原地重生成（覆
 client.js	|	2026-10-20 05:20	|	大纲页加自动推演（确认后覆盖并保存）、生成前确认、通用 ConfirmDialog
 selfcheck-rededuce.mjs	|	2026-10-20 05:20	|	新增原地重生成自检
 README.md	|	2026-10-20 05:20	|	补充大纲页自动推演与生成确认说明
+index.js	|	2026-10-20 05:32	|	作品会话挂到工作区分组：目录无工作区则新建「小说工坊」，bootstrap 补挂老作品
+README.md	|	2026-10-20 05:32	|	补充会话分组说明
+selfcheck-group.mjs	|	2026-10-20 05:32	|	新增分组归属自检

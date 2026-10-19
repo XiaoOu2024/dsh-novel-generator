@@ -559,9 +559,18 @@ async function bootstrap(ctx, root) {
       presetList = [];
     }
   }
+  const projects = await listProjects(root);
+  // Repair projects created before sessions were placed in the sidebar group.
+  for (const project of projects) {
+    try {
+      await ensureWorkspace(ctx, project);
+    } catch {
+      // A missing directory or an older harness simply leaves the session as is.
+    }
+  }
   return {
-    revision: '2026-10-20.5',
-    projects: await listProjects(root),
+    revision: '2026-10-20.6',
+    projects,
     models: {
       default: modelCatalog.default || null,
       groups: (modelCatalog.groups || []).map((group) => ({
@@ -622,7 +631,21 @@ async function createProject(ctx, root, body) {
     chapters: [],
   };
   await writeJson(projectFile(root, project.projectId), project);
-  return { project: summarize(project), detail: project, warning };
+
+  // Put the session in a sidebar workspace instead of leaving it ungrouped.
+  let workspace = null;
+  try {
+    workspace = await ensureWorkspace(ctx, project);
+  } catch (error) {
+    const message = `会话已创建，但没能放进「${WORKSPACE_TITLE}」分组：${error instanceof Error ? error.message : String(error)}`;
+    warning = warning === null ? message : `${warning} ${message}`;
+  }
+  return {
+    project: summarize(project),
+    detail: project,
+    warning,
+    workspace: workspace ? { workspaceId: workspace.id, title: workspace.title, path: workspace.path } : null,
+  };
 }
 
 async function updateTimeline(root, body) {
@@ -713,6 +736,38 @@ async function saveChapter(root, body) {
     chapter.updatedAt = Date.now();
     return { chapter: { ...chapter, content: undefined }, project: summarize(project) };
   });
+}
+
+/** Display name the plugin gives the sidebar workspace that holds its sessions. */
+const WORKSPACE_TITLE = '小说工坊';
+/** Projects whose session is already accounted for in this process. */
+const ensuredWorkspaces = new Set();
+
+/**
+ * Put a project's session under a sidebar workspace instead of 未分组: reuse the
+ * workspace that owns the project's directory, otherwise create one titled
+ * 小说工坊 for it. Idempotent, so bootstrap can repair older projects too.
+ */
+async function ensureWorkspace(ctx, project) {
+  const registry = ctx.get('workspaceRegistry');
+  if (!registry || !project || !project.sessionId || !project.cwd) return null;
+  if (ensuredWorkspaces.has(project.projectId)) return null;
+  const attached = registry.list()
+    .some((workspace) => Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(project.sessionId));
+  if (attached) {
+    ensuredWorkspaces.add(project.projectId);
+    return null;
+  }
+  let workspace;
+  try {
+    workspace = await registry.resolveByPath(project.cwd);
+  } catch {
+    workspace = undefined;
+  }
+  if (!workspace) workspace = await registry.create(project.cwd, WORKSPACE_TITLE);
+  await workspace.attachSession(project.sessionId);
+  ensuredWorkspaces.add(project.projectId);
+  return workspace;
 }
 
 /** One snapshot per elapsed timeline threshold, derived from that period's chapters. */
