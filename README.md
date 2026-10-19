@@ -11,7 +11,7 @@ dsh plugin --profile web add dsh-novel-timeline
 
 或在 DSH 的 **设置 → 插件** 里安装（本包声明了 `dsh.bundle`）。装好后刷新页面，界面左下角出现「小说工坊」按钮。
 
-> npm 包名是 （ 已被同名插件占用），GitHub 仓库仍是 ，两者指同一个插件。
+> npm 包名是 `dsh-novel-timeline`（`dsh-novel-studio` 已被同名插件占用），GitHub 仓库仍是 `XiaoOu2024/dsh-novel-studio`，两者指同一个插件。
 
 需要 **DeepSeek Harness 0.2.1-rc.2 或更新的 0.2.x**：宿主侧调用 `sessionController`（create / selectModel / prompt / resolveAgent）、`workspaceRegistry`（create / resolveByPath / attachSession）与 `agentPresets`，这些在 0.2.1 之前不存在或不稳定。`package.json` 里以 `peerDependencies: { "@deepseek-ai/dsh": "^0.2.1-rc.2" }`（optional）声明，安装环境与本机验证版本一致。
 
