@@ -181,7 +181,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
   stroke-linejoin:round;stroke-linecap:round}
 .dsn-chart .dot{fill:var(--dsw-alias-state-business-primary);stroke:var(--dsw-alias-bg-layer-1);stroke-width:1.5}
 .dsn-chart .snap{stroke:var(--dsw-alias-state-warn-primary);stroke-width:1;stroke-dasharray:5 4}
-.dsn-chart .span{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.22;stroke-linecap:round}
+.dsn-chart .span{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.28;stroke-linecap:round}
+.dsn-chart .span-base{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.1;stroke-linecap:round}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
 .dsn-card{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);
@@ -772,11 +773,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const plotHeight = height - pad.top - pad.bottom;
       const windows = chapters.map((chapter) => chapterWindow(detail, chapter));
       const maxDay = Math.max(1, ...windows.map((span) => span.end));
-      const xFor = (index) => pad.left + (chapters.length === 1
-        ? plotWidth / 2
-        : (index / (chapters.length - 1)) * plotWidth);
-      const yFor = (value) => pad.top + (1 - value / maxDay) * plotHeight;
-      const yTicks = [...new Set([0, Math.round(maxDay / 2), maxDay])];
+      // Round the axis top to a readable step so the gridlines are not "23 天".
+      const rawStep = Math.max(1, maxDay / 4);
+      const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+      const step = [1, 2, 5, 10].map((factor) => factor * magnitude).find((value) => value >= rawStep) || maxDay;
+      const axisTop = Math.max(step, Math.ceil(maxDay / step) * step);
+      const yTicks = [];
+      for (let value = 0; value <= axisTop + 0.5; value += step) yTicks.push(Math.round(value));
+      // One slot per chapter, drawn in the middle of its slot, so two chapters
+      // do not end up pinned to the left and right frame.
+      const slot = plotWidth / chapters.length;
+      const xFor = (index) => pad.left + slot * (index + 0.5);
+      const yFor = (value) => pad.top + (1 - value / axisTop) * plotHeight;
       const labelStride = Math.max(1, Math.ceil(chapters.length / 10));
       const lastSnapshotDay = detail.timelineFacts ? detail.timelineFacts.latestSnapshotDay : 0;
       const points = windows.map((span, index) => `${xFor(index)},${yFor(span.start)}`).join(' ');
@@ -785,7 +793,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-chart-head' },
           h('span', { className: 'dsn-label' }, '章节时间曲线'),
           h('span', { className: 'dsn-hint' },
-            `纵轴：故事天数 · 横轴：第几章 · 共 ${chapters.length} 章（竖条是该章的时间跨度）`)),
+            `纵轴：故事天数 · 横轴：第几章 · 共 ${chapters.length} 章（浅条到本章结束、深条是本章跨度）`)),
         h('svg', { className: 'dsn-chart', viewBox: `0 0 ${width} ${height}`, role: 'img' },
           yTicks.map((tick) => h('g', { key: `y-${tick}` },
             h('line', {
@@ -801,7 +809,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               y: yFor(tick) + 3,
               textAnchor: 'end',
             }, `${tick} 天`))),
-          lastSnapshotDay > 0 && lastSnapshotDay <= maxDay
+          lastSnapshotDay > 0 && lastSnapshotDay <= axisTop
             ? h('g', null,
               h('line', {
                 className: 'snap',
@@ -817,6 +825,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 textAnchor: 'end',
               }, `最新快照 ${lastSnapshotDay} 天`))
             : null,
+          windows.map((span, index) => h('line', {
+            key: `base-${chapters[index].chapterId}`,
+            className: 'span-base',
+            x1: xFor(index),
+            x2: xFor(index),
+            y1: yFor(0),
+            y2: yFor(span.end),
+          })),
           windows.map((span, index) => h('line', {
             key: `span-${chapters[index].chapterId}`,
             className: 'span',
