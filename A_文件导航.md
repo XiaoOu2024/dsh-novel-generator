@@ -29,3 +29,8 @@ selfcheck-snapshot.mjs	|	2026-10-20 03:58	|	新增快照自检脚本
 client.js	|	2026-10-20 04:02	|	故事页同步生成后的正文；切换作品重置工作区状态
 client.js	|	2026-10-20 04:08	|	侧栏小说工坊按钮底色改为淡蓝（state-business-tertiary，明暗主题自适应）
 client.js	|	2026-10-20 04:12	|	主按钮/单位切换改用 label-primary+bg-layer 反色配对，去掉写死白字；toast 改主题色；补 color-scheme
+index.js	|	2026-10-20 05:05	|	快照阈值改为天0起算、按章节梗概结算、新增 /compose 一键出章、cursor 迁移为天
+client.js	|	2026-10-20 05:05	|	时间线0..最新快照、去掉章节列表与新建按钮、故事页左右翻章+新建弹窗、大纲去掉自动推演
+README.md	|	2026-10-20 05:05	|	同步新流程说明
+selfcheck.mjs	|	2026-10-20 05:05	|	改用 /outline/save 建章
+selfcheck-compose.mjs	|	2026-10-20 05:05	|	新增自动推演整章与快照阈值自检

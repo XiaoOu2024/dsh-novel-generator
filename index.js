@@ -62,7 +62,25 @@ async function readProject(root, projectId) {
   } catch {
     throw httpError(404, `作品不存在: ${projectId}`);
   }
-  return JSON.parse(text);
+  return migrateProject(JSON.parse(text));
+}
+
+/**
+ * The timeline cursor used to count grid cells and now counts story days.
+ * A record written by the old build is converted once, on read, so a project
+ * created before the change keeps pointing at the same story day.
+ */
+function migrateProject(project) {
+  if (!project.timeline || typeof project.timeline !== 'object') {
+    project.timeline = { unitDays: 30, cursor: 0, origin: '2026-01-01', cursorUnit: 'day' };
+    return project;
+  }
+  if (project.timeline.cursorUnit !== 'day') {
+    const unit = Math.max(1, Number(project.timeline.unitDays) || 30);
+    project.timeline.cursor = Math.max(0, Math.round((Number(project.timeline.cursor) || 0) * unit));
+    project.timeline.cursorUnit = 'day';
+  }
+  return project;
 }
 
 async function listProjects(root) {
@@ -411,7 +429,7 @@ function chapterPrompt(project, chapter, previous) {
 }
 
 function deducePrompt(project, chapter) {
-  const day = chapter ? chapterWindow(project, chapter).start : project.timeline.cursor * project.timeline.unitDays;
+  const day = chapter ? chapterWindow(project, chapter).start : (Number(project.timeline.cursor) || 0);
   const snapshot = snapshotAt(project, day);
   const chapters = project.chapters || [];
   const previous = chapters.length ? chapters[chapters.length - 1] : null;
@@ -438,7 +456,7 @@ function deducePrompt(project, chapter) {
 
 function snapshotPrompt(project, previous, chapters) {
   const lines = [];
-  lines.push('你是这部小说的世界观维护者。请阅读以下章节，输出更新后的世界快照。');
+  lines.push('你是这部小说的世界观维护者。请阅读以下章节梗概，输出更新后的世界快照。');
   lines.push('只输出一个 JSON 对象，不要任何额外文字。');
   lines.push('');
   if (previous) {
@@ -446,12 +464,18 @@ function snapshotPrompt(project, previous, chapters) {
     lines.push(snapshotBlock(previous));
     lines.push('');
   }
-  lines.push('【需要纳入的新章节】');
+  lines.push('【这段时间的新章节】');
   for (const chapter of chapters) {
-    lines.push(`--- 第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${chapter.startDay} 天起）---`);
-    lines.push(`梗概：${(chapter.outline && chapter.outline.synopsis) || '（无）'}`);
-    const body = String(chapter.content || '');
-    lines.push(body.length > 6000 ? `${body.slice(0, 6000)}\n（后文省略）` : body);
+    const window = chapterWindow(project, chapter);
+    lines.push(`--- 第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${window.start} → ${window.end} 天，${dateForDay(project, window.start)} 至 ${dateForDay(project, window.end)}）---`);
+    const synopsis = ((chapter.outline && chapter.outline.synopsis) || '').trim();
+    if (synopsis !== '') {
+      lines.push(`梗概：${synopsis}`);
+    } else {
+      const body = String(chapter.content || '');
+      lines.push('梗概：（无，以下为正文节选）');
+      lines.push(body.length > 2000 ? `${body.slice(0, 2000)}\n（后文省略）` : body);
+    }
     lines.push('');
   }
   lines.push('【输出 JSON 结构】');
@@ -536,7 +560,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.2',
+    revision: '2026-10-20.4',
     projects: await listProjects(root),
     models: {
       default: modelCatalog.default || null,
@@ -610,6 +634,7 @@ async function updateTimeline(root, body) {
     if (Number.isFinite(unitDays) && unitDays >= 1) project.timeline.unitDays = Math.round(unitDays);
     if (Number.isFinite(cursor) && cursor >= 0) project.timeline.cursor = Math.round(cursor);
     if (/^\d{4}-\d{2}-\d{2}$/.test(origin)) project.timeline.origin = origin;
+    project.timeline.cursorUnit = 'day';
     return summarize(project);
   });
 }
@@ -637,35 +662,14 @@ function nextChapterIndex(project) {
   return max + 1;
 }
 
-async function createChapter(root, body) {
-  const projectId = asText(body.projectId);
-  const day = Number.isFinite(Number(body.startDay)) ? Math.max(0, Math.round(Number(body.startDay))) : null;
-  return mutateProject(root, projectId, (project) => {
-    const startDay = day === null ? project.timeline.cursor * project.timeline.unitDays : day;
-    const chapter = {
-      chapterId: randomUUID(),
-      index: nextChapterIndex(project),
-      title: asText(body.title) || `第 ${nextChapterIndex(project) + 1} 章`,
-      startDay,
-      durationDays: project.timeline.unitDays,
-      outline: null,
-      content: '',
-      wordCount: 0,
-      status: 'draft',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      generatedAt: null,
-    };
-    project.chapters.push(chapter);
-    return chapter;
-  });
-}
-
 async function saveOutline(root, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
   const outline = normalizeOutline(body.outline);
   const title = asText(body.title);
+  const startDay = Number.isFinite(Number(body.startDay))
+    ? Math.max(0, Math.round(Number(body.startDay)))
+    : null;
   return mutateProject(root, projectId, (project) => {
     let chapter = chapterId === '' ? null : project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) {
@@ -673,7 +677,7 @@ async function saveOutline(root, body) {
         chapterId: randomUUID(),
         index: nextChapterIndex(project),
         title: title || `第 ${nextChapterIndex(project) + 1} 章`,
-        startDay: project.timeline.cursor * project.timeline.unitDays,
+        startDay: startDay === null ? lastChapterEnd(project) : startDay,
         durationDays: outline.durationDays,
         outline: null,
         content: '',
@@ -716,8 +720,26 @@ function snapshotDue(project, day) {
   const snapshots = project.snapshots || [];
   const last = snapshots[snapshots.length - 1];
   const unit = Math.max(1, project.timeline.unitDays || 30);
-  if (!last) return day > 0;
-  return day - last.day >= unit;
+  // Story time starts at day 0, so the first snapshot is due once the story has
+  // advanced one full unit from the origin rather than on the first chapter.
+  const since = last ? last.day : 0;
+  return day - since >= unit;
+}
+
+/** Story day where the next chapter continues: the end of the last chapter. */
+function lastChapterEnd(project) {
+  let end = 0;
+  for (const chapter of project.chapters || []) {
+    end = Math.max(end, chapterWindow(project, chapter).end);
+  }
+  return end;
+}
+
+/** The chapter this one follows, by start day. */
+function previousChapter(project, chapter) {
+  return (project.chapters || [])
+    .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay <= chapter.startDay)
+    .sort((a, b) => b.startDay - a.startDay)[0] || null;
 }
 
 function registerSnapshot(ctx, root, registry, projectId, day) {
@@ -725,12 +747,13 @@ function registerSnapshot(ctx, root, registry, projectId, day) {
     const project = await readProject(root, projectId);
     const snapshots = project.snapshots || [];
     const last = snapshots[snapshots.length - 1] || null;
-    const since = last ? last.day : -1;
+    const since = last ? last.day : 0;
     const chapters = (project.chapters || [])
-      .filter((chapter) => chapterWindow(project, chapter).end > since && String(chapter.content || '').trim() !== '')
+      .filter((chapter) => chapterWindow(project, chapter).end > since
+        && (((chapter.outline && chapter.outline.synopsis) || '').trim() !== '' || String(chapter.content || '').trim() !== ''))
       .sort((a, b) => a.startDay - b.startDay);
     if (chapters.length === 0) throw httpError(409, '自上一版快照以来还没有已生成的章节，无法更新世界快照');
-    job.message = `正在阅读 ${chapters.length} 个章节并更新世界快照`;
+    job.message = `正在阅读 ${chapters.length} 章的梗概并更新世界快照`;
     const reply = await askAgent(ctx, project, snapshotPrompt(project, last, chapters));
     const parsed = parseJsonReply(reply);
     if (!parsed) throw httpError(502, '模型没有返回可解析的快照 JSON');
@@ -783,6 +806,93 @@ function startGenerate(ctx, root, registry, body) {
       snapshotJobId = snapshotJob.jobId;
     }
     return { chapter: saved, wordCount: wordCount(content), snapshotJobId };
+  });
+}
+
+/**
+ * One click from the new-chapter dialog: deduce the synopsis and the title,
+ * write the chapter, then run the same snapshot check a generated chapter does.
+ */
+function startCompose(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  return startJob(registry, { kind: 'compose', projectId }, async (job) => {
+    const minWords = Math.round(Number(body.minWords) || 0);
+    const maxWords = Math.round(Number(body.maxWords) || 0);
+    const durationDays = Math.round(Number(body.durationDays) || 0);
+    if (minWords < 1 || maxWords < 1 || durationDays < 1) {
+      throw httpError(400, '请先填写章节最低字数、最多字数和时间长度');
+    }
+    if (maxWords < minWords) throw httpError(400, '最多字数不能小于最低字数');
+
+    const project = await readProject(root, projectId);
+    const startDay = Number.isFinite(Number(body.startDay))
+      ? Math.max(0, Math.round(Number(body.startDay)))
+      : lastChapterEnd(project);
+    const draft = {
+      chapterId: randomUUID(),
+      index: nextChapterIndex(project),
+      title: asText(body.title),
+      startDay,
+      durationDays,
+      outline: null,
+    };
+    const previous = previousChapter(project, draft);
+
+    job.message = '正在推演本章梗概与名称';
+    const deduceReply = await askAgent(ctx, project, deducePrompt(project, draft));
+    const deduced = parseJsonReply(deduceReply) || {};
+    const synopsis = asText(firstOf(deduced, ['synopsis', '梗概', 'summary']));
+    if (synopsis === '') throw httpError(502, '模型没有给出章节梗概');
+    const title = draft.title
+      || asText(firstOf(deduced, ['title', '标题']))
+      || `第 ${draft.index + 1} 章`;
+    const outline = {
+      synopsis,
+      minWords,
+      maxWords,
+      durationDays,
+      synopsisMinChars: Math.min(100, Math.max(20, synopsis.length)),
+      savedAt: Date.now(),
+    };
+
+    const chapterId = await mutateProject(root, projectId, (current) => {
+      current.chapters.push({
+        ...draft,
+        title,
+        outline,
+        content: '',
+        wordCount: 0,
+        status: 'outlined',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        generatedAt: null,
+      });
+      return draft.chapterId;
+    });
+
+    job.message = '正在生成章节正文';
+    const fresh = await readProject(root, projectId);
+    const target = fresh.chapters.find((entry) => entry.chapterId === chapterId);
+    if (!target) throw httpError(500, '章节写入失败');
+    const content = await askAgent(ctx, fresh, chapterPrompt(fresh, target, previous));
+
+    await mutateProject(root, projectId, (current) => {
+      const entry = current.chapters.find((item) => item.chapterId === chapterId);
+      if (!entry) throw httpError(500, '章节写入失败');
+      entry.content = content;
+      entry.wordCount = wordCount(content);
+      entry.status = 'generated';
+      entry.generatedAt = Date.now();
+      entry.updatedAt = Date.now();
+    });
+
+    const after = await readProject(root, projectId);
+    const window = chapterWindow(after, target);
+    let snapshotJobId = null;
+    if (snapshotDue(after, window.end)) {
+      snapshotJobId = registerSnapshot(ctx, root, registry, projectId, window.end).jobId;
+    }
+    return { chapterId, title, wordCount: wordCount(content), snapshotJobId };
   });
 }
 
@@ -858,14 +968,14 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
     }
     case '/project/timeline':
       return updateTimeline(root, body);
-    case '/chapter/create':
-      return createChapter(root, body);
     case '/outline/save':
       return saveOutline(root, body);
     case '/chapter/save':
       return saveChapter(root, body);
     case '/generate':
       return startGenerate(ctx, root, registry, body);
+    case '/compose':
+      return startCompose(ctx, root, registry, body);
     case '/deduce':
       return startDeduce(ctx, root, registry, body);
     case '/snapshot/refresh': {
@@ -873,7 +983,7 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       const project = await readProject(root, projectId);
       const day = Number.isFinite(Number(body.day))
         ? Math.max(0, Math.round(Number(body.day)))
-        : project.timeline.cursor * project.timeline.unitDays;
+        : lastChapterEnd(project);
       return registerSnapshot(ctx, root, registry, projectId, day);
     }
     default:

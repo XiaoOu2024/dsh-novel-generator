@@ -8,7 +8,7 @@ async function call(path, body) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
-  if (!res.ok) throw new Error(`${path} -> ${res.status} ${JSON.stringify(data).slice(0, 400)}`);
+  if (!res.ok) throw new Error(`${path} -> ${res.status} ${JSON.stringify(data).slice(0, 300)}`);
   return data;
 }
 
@@ -29,18 +29,16 @@ async function call(path, body) {
 
   const projectId = created.project.projectId;
   const detail = await call(`/project?projectId=${projectId}`);
-  console.log('detail:', JSON.stringify({ projectId: detail.projectId, chapters: detail.chapters.length, snapshots: detail.snapshots.length, timeline: detail.timeline }));
+  console.log('detail:', JSON.stringify({ chapters: detail.chapters.length, snapshots: detail.snapshots.length, timeline: detail.timeline }));
 
-  const timeline = await call('/project/timeline', { projectId, unitDays: 90, cursor: 3 });
+  const timeline = await call('/project/timeline', { projectId, unitDays: 90, cursor: 0 });
   console.log('timeline:', JSON.stringify(timeline.timeline));
-
-  const chapter = await call('/chapter/create', { projectId, startDay: 270 });
-  console.log('chapter:', JSON.stringify({ chapterId: chapter.chapterId, index: chapter.index, title: chapter.title, startDay: chapter.startDay }));
 
   const outlined = await call('/outline/save', {
     projectId,
-    chapterId: chapter.chapterId,
+    chapterId: '',
     title: '雨夜来客',
+    startDay: 0,
     outline: {
       durationDays: 12,
       minWords: 900,
@@ -50,13 +48,14 @@ async function call(path, body) {
     },
   });
   console.log('outline:', JSON.stringify({
+    chapterId: outlined.chapter.chapterId,
     title: outlined.chapter.title,
+    startDay: outlined.chapter.startDay,
     durationDays: outlined.chapter.durationDays,
     status: outlined.chapter.status,
-    synopsis: outlined.chapter.outline.synopsis,
   }));
 
-  const saved = await call('/chapter/save', { projectId, chapterId: chapter.chapterId, content: '雨下得很大。门被敲响了三下。' });
+  const saved = await call('/chapter/save', { projectId, chapterId: outlined.chapter.chapterId, content: '雨下得很大。门被敲响了三下。' });
   console.log('save:', JSON.stringify({ wordCount: saved.chapter.wordCount, status: saved.chapter.status }));
 
   const bootstrap = await call('/bootstrap');

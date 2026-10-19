@@ -172,13 +172,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
   border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary)}
 .dsn-unit.on{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}
 .dsn-range{width:100%;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:2px 0 0}
+.dsn-range:disabled{cursor:default;opacity:.5}
+.dsn-trackwrap{position:relative;padding:2px 0 0}
+.dsn-marks{position:relative;height:9px;margin:0 9px}
+.dsn-mark{position:absolute;top:1px;width:6px;height:6px;margin-left:-3px;border-radius:50%;
+  background:var(--dsw-alias-state-business-primary);opacity:.65}
 .dsn-ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--dsw-alias-label-secondary);padding:0 2px}
-.dsn-chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 4px}
-.dsn-chip{flex:0 0 auto;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  height:24px;padding:0 10px;border-radius:999px;font:inherit;font-size:11px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
-.dsn-chip.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
-.dsn-chip.snap{background:transparent;border-style:dashed;cursor:default}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
 .dsn-card{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);
@@ -206,6 +205,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--dsw-alias-border-l2);
   border-top-color:var(--dsw-alias-brand-primary);animation:dsn-spin .9s linear infinite}
 @keyframes dsn-spin{to{transform:rotate(360deg)}}
+
+/* new-chapter dialog */
+.dsn-dialog-backdrop{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.32);pointer-events:auto}
+.dsn-dialog{width:min(560px,calc(100% - 48px));display:flex;flex-direction:column;overflow:hidden;
+  border-radius:14px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);
+  color:var(--dsw-alias-label-primary);box-shadow:0 24px 64px rgba(0,0,0,.32)}
+.dsn-dialog-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.dsn-dialog-body{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 16px}
+.dsn-dialog-body .span2{grid-column:span 2}
+.dsn-dialog-foot{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--dsw-alias-border-l1)}
 `;
 
     function StyleSheet() {
@@ -424,115 +434,122 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* -------------------------------------------------------------- timeline */
 
-    function Timeline({ detail, unitDays, cursor, onChange, onOpenChapter }) {
-      const chapters = detail.chapters || [];
+    /**
+     * The timeline spans day 0 through the newest world snapshot: nothing exists
+     * beyond the last snapshot, so the slider cannot point there either.
+     */
+    function Timeline({ detail, unitDays, day, onChange }) {
       const snapshots = detail.snapshots || [];
-      const maxDay = chapters.reduce((max, chapter) => Math.max(max, chapterWindow(detail, chapter).end), unitDays);
-      const maxTick = Math.max(12, Math.ceil(maxDay / unitDays) + 2);
+      const latest = snapshots.length ? snapshots[snapshots.length - 1].day : 0;
+      const max = Math.max(0, latest);
       const ticks = [];
-      const stride = Math.max(1, Math.round(maxTick / 6));
-      for (let tick = 0; tick <= maxTick; tick += stride) ticks.push(tick);
+      const stride = Math.max(1, Math.round(max / 6));
+      for (let tick = 0; tick <= max; tick += stride) ticks.push(tick);
+      if (max > 0 && ticks[ticks.length - 1] !== max) ticks.push(max);
+      const marks = snapshots.map((snapshot) => snapshot.day);
 
       return h('div', { className: 'dsn-timeline' },
         h('div', { className: 'dsn-timeline-head' },
-          h('div', { className: 'dsn-date' }, dateForDay(detail, cursor * unitDays)),
-          h('div', { className: 'dsn-sub' }, `第 ${cursor} 格 · 每格 ${unitDays} 天`),
+          h('div', { className: 'dsn-date' }, dateForDay(detail, day)),
+          h('div', { className: 'dsn-sub' },
+            max === 0
+              ? '还没有世界快照'
+              : `第 ${day} / ${max} 天 · 已写入 ${snapshots.length} 份快照`),
           h('div', { className: 'dsn-spacer' }),
           h('div', { className: 'dsn-units' }, UNIT_CHOICES.map((unit) => h('button', {
             key: unit,
             type: 'button',
             className: `dsn-unit${unit === unitDays ? ' on' : ''}`,
-            onClick: () => onChange(unit, cursor),
-          }, `${unit} 天`)))),
-        h('input', {
-          className: 'dsn-range',
-          type: 'range',
-          min: 0,
-          max: maxTick,
-          step: 1,
-          value: cursor,
-          onChange: (event) => onChange(unitDays, Number(event.target.value)),
-        }),
-        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, dateForDay(detail, tick * unitDays)))),
-        (chapters.length || snapshots.length)
-          ? h('div', { className: 'dsn-chips' },
-            snapshots.map((snapshot) => h('span', {
-              key: `snap-${snapshot.snapshotId}`,
-              className: 'dsn-chip snap',
-              title: snapshot.summary || '世界快照',
-            }, `快照 · ${dateForDay(detail, snapshot.day)}`)),
-            chapters.map((chapter) => h('button', {
-              key: chapter.chapterId,
-              type: 'button',
-              className: 'dsn-chip',
-              onClick: () => onOpenChapter(chapter.chapterId),
-            }, `${chapter.index + 1}. ${chapter.title || '未命名'} · ${dateForDay(detail, chapterWindow(detail, chapter).start)}`)))
+            title: `每 ${unit} 天结算一份世界快照`,
+            onClick: () => onChange(unit, day),
+          }, `每 ${unit} 天`)))),
+        h('div', { className: 'dsn-trackwrap' },
+          h('input', {
+            className: 'dsn-range',
+            type: 'range',
+            min: 0,
+            max: max,
+            step: 1,
+            value: Math.min(day, max),
+            disabled: max === 0,
+            onChange: (event) => onChange(unitDays, Number(event.target.value)),
+          }),
+          max > 0
+            ? h('div', { className: 'dsn-marks' }, marks.map((mark) => h('span', {
+              key: mark,
+              className: 'dsn-mark',
+              style: { left: `${(mark / max) * 100}%` },
+              title: `快照 · ${dateForDay(detail, mark)}`,
+            })))
+            : null),
+        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, dateForDay(detail, tick)))),
+        max === 0
+          ? h('div', { className: 'dsn-hint' }, `生成章节后，故事时间每走过 ${unitDays} 天就会写入第一份世界快照，时间线随之生长。`)
           : null);
     }
 
     /* ------------------------------------------------------------ world page */
 
-    function WorldPage({ detail, onTimeline, onEnterStory, onNewChapter, onOpenChapter, onRefreshSnapshot, snapshotBusy }) {
-      const initialUnit = detail.timeline.unitDays || 30;
-      const [unitDays, setUnitDays] = useState(initialUnit);
-      const [cursor, setCursor] = useState(detail.timeline.cursor || 0);
+    function WorldPage({ detail, onTimeline, onEnterStory, onRefreshSnapshot, snapshotBusy }) {
+      const snapshots = detail.snapshots || [];
+      const latest = snapshots.length ? snapshots[snapshots.length - 1].day : 0;
+      const [unitDays, setUnitDays] = useState(detail.timeline.unitDays || 30);
+      const [day, setDay] = useState(Math.min(Math.max(0, detail.timeline.cursor || 0), latest));
       const commitTimer = useRef(null);
 
       useEffect(() => {
         setUnitDays(detail.timeline.unitDays || 30);
-        setCursor(detail.timeline.cursor || 0);
-      }, [detail.projectId, detail.timeline.unitDays, detail.timeline.cursor]);
+        setDay(Math.min(Math.max(0, detail.timeline.cursor || 0), latest));
+      }, [detail.projectId, detail.timeline.unitDays, detail.timeline.cursor, latest]);
 
       useEffect(() => () => {
         if (commitTimer.current) clearTimeout(commitTimer.current);
       }, []);
 
-      const change = useCallback((nextUnit, nextCursor) => {
+      const change = useCallback((nextUnit, nextDay) => {
         setUnitDays(nextUnit);
-        setCursor(nextCursor);
+        setDay(nextDay);
         if (commitTimer.current) clearTimeout(commitTimer.current);
-        commitTimer.current = setTimeout(() => onTimeline(nextUnit, nextCursor), 400);
+        commitTimer.current = setTimeout(() => onTimeline(nextUnit, nextDay), 400);
       }, [onTimeline]);
 
-      const cursorDay = cursor * unitDays;
-      const snapshot = snapshotAt(detail, cursorDay);
+      const snapshot = snapshotAt(detail, day);
       const chapters = detail.chapters || [];
       const nearest = useMemo(() => {
         if (chapters.length === 0) return null;
         let best = chapters[0];
         let bestDistance = Infinity;
         for (const chapter of chapters) {
-          const distance = Math.abs(chapterWindow(detail, chapter).start - cursorDay);
+          const distance = Math.abs(chapterWindow(detail, chapter).start - day);
           if (distance < bestDistance) {
             best = chapter;
             bestDistance = distance;
           }
         }
         return best;
-      }, [chapters, cursorDay]);
+      }, [chapters, day]);
 
       return h(React.Fragment, null,
         h('div', { className: 'dsn-pagehead' },
           h('div', { className: 'dsn-title' }, detail.title),
           h('div', { className: 'dsn-sub' }, detail.cwd),
           h('div', { className: 'dsn-spacer' }),
-          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: () => onNewChapter(cursorDay) }, '新建章节'),
           h('button', {
             className: 'dsn-btn ghost',
             type: 'button',
-            disabled: snapshotBusy,
-            onClick: () => onRefreshSnapshot(cursorDay),
-            title: '阅读自上一版快照以来的章节，更新世界观、角色、势力与关系',
-          }, snapshotBusy ? '快照更新中…' : '同步世界快照'),
-          h('button', { className: 'dsn-btn primary', type: 'button', onClick: () => onEnterStory(cursorDay) },
+            disabled: snapshotBusy || chapters.length === 0,
+            onClick: () => onRefreshSnapshot(day),
+            title: '用最后一份快照与这段时间的章节梗概，立即结算一份新快照',
+          }, snapshotBusy ? '结算中…' : '结算世界快照'),
+          h('button', { className: 'dsn-btn primary', type: 'button', onClick: () => onEnterStory(day) },
             nearest ? `进入故事 · 第 ${nearest.index + 1} 章` : '进入故事')),
-        h(Timeline, { detail, unitDays, cursor, onChange: change, onOpenChapter }),
+        h(Timeline, { detail, unitDays, day, onChange: change }),
         h('div', { className: 'dsn-grid' },
           h('div', { className: 'dsn-card', style: { gridColumn: 'span 2' } },
             h('h4', null, '世界观'),
             snapshot && snapshot.world
               ? h('div', { className: 'dsn-text' }, snapshot.world)
-              : h('div', { className: 'dsn-muted' }, '该时间点还没有世界快照。世界快照会在章节生成后按时间线阈值自动写入。')),
+              : h('div', { className: 'dsn-muted' }, '还没有落在这一时间点的世界快照。')),
           h('div', { className: 'dsn-card' },
             h('h4', null, '角色列表'),
             snapshot && snapshot.characters.length
@@ -561,7 +578,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------ story page */
 
-    function StoryPage({ detail, chapter, onBack, onOutline, onSaved }) {
+    function StoryPage({ detail, chapter, previous, next, onBack, onOutline, onSaved, onOpenChapter, onNewChapter }) {
       const [text, setText] = useState(chapter ? chapter.content || '' : '');
       const [dirty, setDirty] = useState(false);
       const [busy, setBusy] = useState(false);
@@ -605,9 +622,25 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-title' }, chapter ? `第 ${chapter.index + 1} 章 · ${chapter.title || '未命名'}` : '章节故事'),
           h('div', { className: 'dsn-sub' }, window ? `${dateForDay(detail, window.start)} → ${dateForDay(detail, window.end)}` : ''),
           h('div', { className: 'dsn-spacer' }),
-          h('button', { className: 'dsn-btn', type: 'button', onClick: onOutline }, '章节大纲 →')),
+          previous
+            ? h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              title: `第 ${previous.index + 1} 章 · ${previous.title || '未命名'}`,
+              onClick: () => onOpenChapter(previous.chapterId),
+            }, '← 上一章')
+            : null,
+          next
+            ? h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              title: `第 ${next.index + 1} 章 · ${next.title || '未命名'}`,
+              onClick: () => onOpenChapter(next.chapterId),
+            }, '下一章 →')
+            : h('button', { className: 'dsn-btn primary', type: 'button', onClick: onNewChapter }, '＋ 新建章节'),
+          h('button', { className: 'dsn-btn ghost', type: 'button', disabled: !chapter, onClick: onOutline }, '章节大纲 →')),
         !chapter
-          ? h('div', { className: 'dsn-empty' }, '还没有章节。回到时间长河新建一章，或是从章节大纲开始。')
+          ? h('div', { className: 'dsn-empty' }, '还没有章节。点右上角「＋ 新建章节」开始第一章。')
           : h(React.Fragment, null,
             h('div', { className: 'dsn-editor' },
               !chapter.outline ? h('div', { className: 'dsn-note' }, '这一章还没有保存过章节大纲，可以先回章节大纲里填写并生成。') : null,
@@ -706,22 +739,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [detail.projectId, chapter, setJob]);
 
       const generating = job && job.state === 'running' && job.kind === 'generate';
-      const deducing = job && job.state === 'running' && job.kind === 'deduce';
 
       useEffect(() => {
         if (!job) return;
-        if (job.kind === 'deduce' && job.state === 'done' && job.result) {
-          setForm((current) => ({
-            ...current,
-            synopsis: job.result.synopsis || current.synopsis,
-            durationDays: job.result.durationDays || current.durationDays,
-            minWords: job.result.minWords || current.minWords,
-            maxWords: job.result.maxWords || current.maxWords,
-            title: current.title || job.result.title || '',
-          }));
-          setSavedAt(0);
-          setMessage('自动推演完成，检查后记得保存');
-        }
         if (job.kind === 'generate' && job.state === 'done') {
           setMessage('章节生成成功');
           notify('章节生成成功', 'success');
@@ -737,14 +757,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-pagehead' },
           h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 章节故事'),
           h('div', { className: 'dsn-title' }, chapter ? `章节大纲 · 第 ${chapter.index + 1} 章` : '章节大纲 · 新章节'),
-          h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0) * (detail.timeline.unitDays || 30))}`),
-          h('div', { className: 'dsn-spacer' }),
-          h('button', {
-            className: 'dsn-btn ghost',
-            type: 'button',
-            disabled: Boolean(deducing || generating),
-            onClick: () => startJob('/deduce'),
-          }, deducing ? '推演中…' : '自动推演')),
+          h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0))}`)),
         h('div', { className: 'dsn-form' },
           h('label', { className: 'dsn-field span2' },
             h('span', { className: 'dsn-label' }, '章节标题'),
@@ -813,30 +826,183 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           }, generating ? '生成中…' : '生成章节故事')));
     }
 
+    /* --------------------------------------------------------- new chapter */
+
+    /**
+     * The only place a chapter is created: word bounds and the story length are
+     * required, and one button can deduce the synopsis and write the chapter.
+     */
+    function NewChapterDialog({ detail, startDay, onCancel, onCreated, notify }) {
+      const [form, setForm] = useState({
+        title: '',
+        minWords: 1200,
+        maxWords: 3500,
+        durationDays: detail.timeline.unitDays || 30,
+      });
+      const [error, setError] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [job, setJob] = useJob();
+
+      const complete = Number(form.minWords) >= 1
+        && Number(form.maxWords) >= Number(form.minWords)
+        && Number(form.durationDays) >= 1;
+
+      const patch = useCallback((field, value) => {
+        setForm((current) => ({ ...current, [field]: value }));
+      }, []);
+
+      const composing = Boolean(job && job.state === 'running' && job.kind === 'compose');
+
+      const create = useCallback(async () => {
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api('/outline/save', {
+            projectId: detail.projectId,
+            chapterId: '',
+            title: form.title,
+            startDay,
+            outline: {
+              durationDays: Number(form.durationDays),
+              minWords: Number(form.minWords),
+              maxWords: Number(form.maxWords),
+              synopsisMinChars: DEFAULT_SYNOPSIS_MIN,
+              synopsis: '',
+            },
+          });
+          await onCreated(result.chapter.chapterId);
+        } catch (createError) {
+          setError(messageOf(createError));
+        } finally {
+          setBusy(false);
+        }
+      }, [detail.projectId, form, startDay, onCreated]);
+
+      const compose = useCallback(async () => {
+        setError('');
+        try {
+          const started = await api('/compose', {
+            projectId: detail.projectId,
+            startDay,
+            title: form.title,
+            minWords: Number(form.minWords),
+            maxWords: Number(form.maxWords),
+            durationDays: Number(form.durationDays),
+          });
+          setJob(started);
+        } catch (composeError) {
+          setError(messageOf(composeError));
+        }
+      }, [detail.projectId, form, startDay, setJob]);
+
+      useEffect(() => {
+        if (!job) return;
+        if (job.state === 'running') return;
+        if (job.state === 'done' && job.kind === 'compose') {
+          notify('章节已生成', 'success');
+          onCreated(job.result && job.result.chapterId);
+          return;
+        }
+        if (job.state === 'error') setError(job.error || '自动推演失败');
+      }, [job ? job.jobId : null, job ? job.state : null]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog' },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, '新建章节'),
+            h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, startDay)}`),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              disabled: composing || busy,
+              onClick: onCancel,
+            }, '取消')),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, '章节名称（可留空，自动推演会补上）'),
+              h('input', {
+                className: 'dsn-input',
+                value: form.title,
+                placeholder: '例如：雨夜来客',
+                onChange: (event) => patch('title', event.target.value),
+              })),
+            h('label', { className: 'dsn-field' },
+              h('span', { className: 'dsn-label' }, '章节最低字数 *'),
+              h('input', {
+                className: 'dsn-input',
+                type: 'number',
+                min: 1,
+                value: form.minWords,
+                onChange: (event) => patch('minWords', Number(event.target.value)),
+              })),
+            h('label', { className: 'dsn-field' },
+              h('span', { className: 'dsn-label' }, '章节最多字数 *'),
+              h('input', {
+                className: 'dsn-input',
+                type: 'number',
+                min: 1,
+                value: form.maxWords,
+                onChange: (event) => patch('maxWords', Number(event.target.value)),
+              })),
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, '故事时间长度（天）*'),
+              h('input', {
+                className: 'dsn-input',
+                type: 'number',
+                min: 1,
+                value: form.durationDays,
+                onChange: (event) => patch('durationDays', Number(event.target.value)),
+              })),
+            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            composing ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), job.message || '正在自动推演…') : null,
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              disabled: !complete || busy || composing,
+              onClick: create,
+            }, busy ? '创建中…' : '创建空章节'),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: !complete || busy || composing,
+              onClick: compose,
+            }, composing ? '自动推演中…' : '自动推演'))));
+    }
+
     /* ------------------------------------------------------------- workspace */
 
     function ProjectWorkspace({ detail, onReload, notify }) {
       const [view, setView] = useState('world');
       const [chapterId, setChapterId] = useState(null);
       const [snapshotBusy, setSnapshotBusy] = useState(false);
-      const chapters = detail.chapters || [];
-      const chapter = chapters.find((entry) => entry.chapterId === chapterId) || null;
+      const [dialogOpen, setDialogOpen] = useState(false);
+      const chapters = useMemo(
+        () => [...(detail.chapters || [])].sort((a, b) => a.startDay - b.startDay || a.index - b.index),
+        [detail.chapters],
+      );
+      const position = chapters.findIndex((entry) => entry.chapterId === chapterId);
+      const chapter = position >= 0 ? chapters[position] : null;
+      const previous = position > 0 ? chapters[position - 1] : null;
+      const next = position >= 0 && position < chapters.length - 1 ? chapters[position + 1] : null;
 
       const openStory = useCallback((id) => {
         setChapterId(id);
         setView('story');
       }, []);
 
-      const enterStory = useCallback((cursorDay) => {
+      const enterStory = useCallback((day) => {
         if (chapters.length === 0) {
           setChapterId(null);
-          setView('outline');
+          setView('story');
           return;
         }
         let best = chapters[0];
         let bestDistance = Infinity;
         for (const entry of chapters) {
-          const distance = Math.abs(chapterWindow(detail, entry).start - cursorDay);
+          const distance = Math.abs(chapterWindow(detail, entry).start - day);
           if (distance < bestDistance) {
             best = entry;
             bestDistance = distance;
@@ -845,31 +1011,33 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         openStory(best.chapterId);
       }, [chapters, detail, openStory]);
 
-      const newChapter = useCallback(async (cursorDay) => {
+      const lastEnd = useMemo(() => {
+        let end = 0;
+        for (const entry of chapters) end = Math.max(end, chapterWindow(detail, entry).end);
+        return end;
+      }, [chapters, detail]);
+
+      const created = useCallback(async (id) => {
+        setDialogOpen(false);
+        if (id) setChapterId(id);
+        setView('story');
+        await onReload();
+      }, [onReload]);
+
+      const saveTimeline = useCallback(async (unitDays, day) => {
         try {
-          const created = await api('/chapter/create', { projectId: detail.projectId, startDay: cursorDay });
-          setChapterId(created.chapterId);
-          setView('outline');
+          await api('/project/timeline', { projectId: detail.projectId, unitDays, cursor: day });
           await onReload();
         } catch (error) {
           notify(messageOf(error), 'error');
         }
       }, [detail.projectId, onReload, notify]);
 
-      const saveTimeline = useCallback(async (unitDays, cursor) => {
-        try {
-          await api('/project/timeline', { projectId: detail.projectId, unitDays, cursor });
-          await onReload();
-        } catch (error) {
-          notify(messageOf(error), 'error');
-        }
-      }, [detail.projectId, onReload, notify]);
-
-      const refreshSnapshot = useCallback(async (cursorDay) => {
+      const refreshSnapshot = useCallback(async (day) => {
         setSnapshotBusy(true);
         try {
-          const started = await api('/snapshot/refresh', { projectId: detail.projectId, day: cursorDay });
-          notify('正在更新世界快照…', 'success');
+          const started = await api('/snapshot/refresh', { projectId: detail.projectId, day });
+          notify('正在结算世界快照…', 'success');
           const timer = setInterval(async () => {
             try {
               const job = await api(`/job?id=${encodeURIComponent(started.jobId)}`);
@@ -877,7 +1045,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               clearInterval(timer);
               setSnapshotBusy(false);
               if (job.state === 'done') {
-                notify('世界快照已更新', 'success');
+                notify('世界快照已更新，时间线向前延伸', 'success');
                 await onReload();
               } else {
                 notify(job.error || '世界快照更新失败', 'error');
@@ -903,8 +1071,6 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               detail,
               onTimeline: saveTimeline,
               onEnterStory: enterStory,
-              onNewChapter: newChapter,
-              onOpenChapter: openStory,
               onRefreshSnapshot: refreshSnapshot,
               snapshotBusy,
             })),
@@ -912,8 +1078,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h(StoryPage, {
               detail,
               chapter,
+              previous,
+              next,
               onBack: () => setView('world'),
               onOutline: () => setView('outline'),
+              onOpenChapter: openStory,
+              onNewChapter: () => setDialogOpen(true),
               onSaved: onReload,
             })),
           h('section', { className: 'dsn-page' },
@@ -926,7 +1096,16 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 await onReload();
               },
               notify,
-            }))));
+            }))),
+        dialogOpen
+          ? h(NewChapterDialog, {
+            detail,
+            startDay: lastEnd,
+            onCancel: () => setDialogOpen(false),
+            onCreated: created,
+            notify,
+          })
+          : null);
     }
 
     /* ------------------------------------------------------------ studio app */
