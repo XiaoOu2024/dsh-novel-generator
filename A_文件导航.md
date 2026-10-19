@@ -87,3 +87,8 @@ README.md	|	2026-10-20 10:10	|	多语言章节更新为已完成
 index.js	|	2026-10-20 10:35	|	删除作品时一并删除工作目录下的作品文件夹，返回 removedDir
 client.js	|	2026-10-20 10:35	|	修复语言读取（LocaleSnapshot.active）；删除确认文案说明会删文件夹
 README.md	|	2026-10-20 10:35	|	补充删除行为说明
+package.json	|	2026-10-20 11:00	|	包名改为 dsh-novel-timeline（原名被占用），已发布 npm 0.1.0
+cordis.patch.yml	|	2026-10-20 11:00	|	行 id/name 跟随改名
+index.js	|	2026-10-20 11:00	|	插件名与路由前缀改为 dsh-novel-timeline
+client.js	|	2026-10-20 11:00	|	模块 id 与 API 前缀跟随改名
+README.md	|	2026-10-20 11:00	|	补 npm 包名与仓库名不同的说明

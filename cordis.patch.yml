@@ -1,4 +1,4 @@
 - insert:
-    - id: dsh-novel-studio
-      name: 'dsh-novel-studio'
+    - id: dsh-novel-timeline
+      name: 'dsh-novel-timeline'
       config: {}
