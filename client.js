@@ -180,9 +180,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-chart .line{fill:none;stroke:var(--dsw-alias-state-business-primary);stroke-width:2;
   stroke-linejoin:round;stroke-linecap:round}
 .dsn-chart .dot{fill:var(--dsw-alias-state-business-primary);stroke:var(--dsw-alias-bg-layer-1);stroke-width:1.5}
-.dsn-chart .snap{stroke:var(--dsw-alias-state-warn-primary);stroke-width:1;stroke-dasharray:5 4}
-.dsn-chart .span{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.28;stroke-linecap:round}
-.dsn-chart .span-base{stroke:var(--dsw-alias-state-business-primary);stroke-width:7;opacity:.1;stroke-linecap:round}
+.dsn-chart .span{stroke:var(--dsw-alias-state-business-primary);opacity:.32;stroke-linecap:round}
 .dsn-grid{flex:1;overflow:auto;padding:14px 16px;display:grid;gap:12px;
   grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-content:start}
 .dsn-card{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);
@@ -763,7 +761,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       if (chapters.length === 0) {
         return h('div', { className: 'dsn-chart-wrap' },
-          h('div', { className: 'dsn-hint' }, '章节时间曲线：还没有章节，生成第一章后这里会画出每章在故事时间里的位置。'));
+          h('div', { className: 'dsn-hint' }, '章节天数统计：还没有章节，生成第一章后这里会画出每章的天数。'));
       }
 
       const width = 1000;
@@ -771,29 +769,31 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const pad = { left: 52, right: 18, top: 14, bottom: 24 };
       const plotWidth = width - pad.left - pad.right;
       const plotHeight = height - pad.top - pad.bottom;
-      const windows = chapters.map((chapter) => chapterWindow(detail, chapter));
-      const maxDay = Math.max(1, ...windows.map((span) => span.end));
+      // The bars are plain day counts: how many days each chapter spans.
+      const weeks = chapters.map((chapter) => {
+        const span = chapterWindow(detail, chapter);
+        return { start: span.start, end: span.end, days: Math.max(1, span.end - span.start) };
+      });
+      const maxDays = Math.max(1, ...weeks.map((entry) => entry.days));
       // Round the axis top to a readable step so the gridlines are not "23 天".
-      const rawStep = Math.max(1, maxDay / 4);
+      const rawStep = Math.max(1, maxDays / 4);
       const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
-      const step = [1, 2, 5, 10].map((factor) => factor * magnitude).find((value) => value >= rawStep) || maxDay;
-      const axisTop = Math.max(step, Math.ceil(maxDay / step) * step);
+      const step = [1, 2, 5, 10].map((factor) => factor * magnitude).find((value) => value >= rawStep) || maxDays;
+      const axisTop = Math.max(step, Math.ceil(maxDays / step) * step);
       const yTicks = [];
       for (let value = 0; value <= axisTop + 0.5; value += step) yTicks.push(Math.round(value));
-      // One slot per chapter, drawn in the middle of its slot, so two chapters
-      // do not end up pinned to the left and right frame.
+      // One slot per chapter, drawn in the middle of its slot.
       const slot = plotWidth / chapters.length;
       const xFor = (index) => pad.left + slot * (index + 0.5);
       const yFor = (value) => pad.top + (1 - value / axisTop) * plotHeight;
       const labelStride = Math.max(1, Math.ceil(chapters.length / 10));
-      const lastSnapshotDay = detail.timelineFacts ? detail.timelineFacts.latestSnapshotDay : 0;
-      const points = windows.map((span, index) => `${xFor(index)},${yFor(span.start)}`).join(' ');
+      const points = weeks.map((entry, index) => `${xFor(index)},${yFor(entry.days)}`).join(' ');
 
       return h('div', { className: 'dsn-chart-wrap' },
         h('div', { className: 'dsn-chart-head' },
-          h('span', { className: 'dsn-label' }, '章节时间曲线'),
+          h('span', { className: 'dsn-label' }, '每章天数'),
           h('span', { className: 'dsn-hint' },
-            `纵轴：故事天数 · 横轴：第几章 · 共 ${chapters.length} 章（浅条到本章结束、深条是本章跨度）`)),
+            `纵轴：本章天数 · 横轴：第几章 · 共 ${chapters.length} 章`)),
         h('svg', { className: 'dsn-chart', viewBox: `0 0 ${width} ${height}`, role: 'img' },
           yTicks.map((tick) => h('g', { key: `y-${tick}` },
             h('line', {
@@ -809,50 +809,27 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               y: yFor(tick) + 3,
               textAnchor: 'end',
             }, `${tick} 天`))),
-          lastSnapshotDay > 0 && lastSnapshotDay <= axisTop
-            ? h('g', null,
-              h('line', {
-                className: 'snap',
-                x1: pad.left,
-                x2: width - pad.right,
-                y1: yFor(lastSnapshotDay),
-                y2: yFor(lastSnapshotDay),
-              }),
-              h('text', {
-                className: 'axis',
-                x: width - pad.right,
-                y: yFor(lastSnapshotDay) - 4,
-                textAnchor: 'end',
-              }, `最新快照 ${lastSnapshotDay} 天`))
-            : null,
-          windows.map((span, index) => h('line', {
-            key: `base-${chapters[index].chapterId}`,
-            className: 'span-base',
+          weeks.map((entry, index) => h('line', {
+            key: `bar-${chapters[index].chapterId}`,
+            className: 'span',
+            style: { strokeWidth: Math.max(6, Math.min(28, slot * 0.42)) },
             x1: xFor(index),
             x2: xFor(index),
             y1: yFor(0),
-            y2: yFor(span.end),
-          })),
-          windows.map((span, index) => h('line', {
-            key: `span-${chapters[index].chapterId}`,
-            className: 'span',
-            x1: xFor(index),
-            x2: xFor(index),
-            y1: yFor(span.start),
-            y2: yFor(span.end),
+            y2: yFor(entry.days),
           })),
           chapters.length > 1
             ? h('polyline', { className: 'line', points })
             : null,
-          windows.map((span, index) => h('g', { key: chapters[index].chapterId },
+          weeks.map((entry, index) => h('g', { key: chapters[index].chapterId },
             h('circle', {
               className: 'dot',
               cx: xFor(index),
-              cy: yFor(span.start),
+              cy: yFor(entry.days),
               r: 3.5,
             },
             h('title', null,
-              `第 ${index + 1} 章 ${chapters[index].title || ''} · 第 ${span.start} → ${span.end} 天`)),
+              `第 ${index + 1} 章 ${chapters[index].title || ''} · 本章 ${entry.days} 天（第 ${entry.start} → ${entry.end} 天）`)),
             index % labelStride === 0 || index === chapters.length - 1
               ? h('text', {
                 className: 'axis',
