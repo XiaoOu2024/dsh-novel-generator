@@ -631,7 +631,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ---------------------------------------------------------- outline page */
 
-    function OutlinePage({ detail, chapter, onBack, onSaved, notify, onRegisterGuard }) {
+    function OutlinePage({ detail, chapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -733,11 +733,57 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [detail.projectId, chapter, setJob, notify]);
 
       const generating = job && job.state === 'running' && job.kind === 'generate';
+      const composing = job && job.state === 'running' && job.kind === 'compose';
+
+      /** 自动推演: deduce synopsis, title and the whole chapter, then save. */
+      const deduce = useCallback(() => {
+        requestConfirm({
+          title: '自动推演会覆盖现有内容',
+          text: '将重新生成故事梗概、章节名称和整章正文，当前的大纲与已写的正文都会被打断覆盖，生成完直接保存。确定继续吗？',
+          confirmLabel: '覆盖并生成',
+          action: async () => {
+            try {
+              const started = await api('/compose', {
+                projectId: detail.projectId,
+                chapterId: chapter ? chapter.chapterId : '',
+                minWords: Number(form.minWords),
+                maxWords: Number(form.maxWords),
+                durationDays: Number(form.durationDays),
+              });
+              setJob(started);
+            } catch (error) {
+              notify(messageOf(error), 'error');
+            }
+          },
+        });
+      }, [requestConfirm, detail.projectId, chapter, form, setJob, notify]);
+
+      /** 生成章节故事: rewrite the body from the saved synopsis. */
+      const generate = useCallback(() => {
+        requestConfirm({
+          title: '以当前故事梗概生成章节故事？',
+          text: '会用已保存的梗概、字数限制和时间长度重写这一章的正文，现有正文会被覆盖。',
+          confirmLabel: '开始生成',
+          action: () => startJob('/generate'),
+        });
+      }, [requestConfirm, startJob]);
 
       useEffect(() => {
         if (!job) return;
         if (job.kind === 'generate' && job.state === 'done') {
           notify('章节生成成功', 'success');
+          onSaved(chapter ? chapter.chapterId : null);
+        }
+        if (job.kind === 'compose' && job.state === 'done') {
+          const result = job.result || {};
+          setForm((current) => ({
+            ...current,
+            title: result.title || current.title,
+            synopsis: result.synopsis || current.synopsis,
+          }));
+          setSavedAt(Date.now());
+          setDirty(false);
+          notify('已重新推演并保存章节', 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
         if (job.state === 'error') {
@@ -749,7 +795,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-pagehead' },
           h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 章节故事'),
           h('div', { className: 'dsn-title' }, chapter ? `章节大纲 · 第 ${chapter.index + 1} 章` : '章节大纲 · 新章节'),
-          h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0))}`)),
+          h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0))}`),
+          h('div', { className: 'dsn-spacer' }),
+          h('button', {
+            className: 'dsn-btn ghost',
+            type: 'button',
+            disabled: !complete || saving || Boolean(generating || composing),
+            title: '按当前字数与时间长度，重新推演梗概、章节名称与整章正文',
+            onClick: deduce,
+          }, composing ? '推演中…' : '自动推演')),
         h('div', { className: 'dsn-form' },
           h('label', { className: 'dsn-field span2' },
             h('span', { className: 'dsn-label' }, '章节标题'),
@@ -806,15 +860,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-foot' },
           h('div', { className: `dsn-hint${complete ? '' : ' warn'}` },
             complete ? (savedAt ? '设定完整，可以生成章节故事' : '设定完整，可以保存') : '梗概达到最低字数并填完其他项后可以保存'),
-          generating ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), '正在生成章节故事…') : null,
+          generating || composing
+            ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }),
+              composing ? (job.message || '正在自动推演…') : '正在生成章节故事…')
+            : null,
           h('div', { className: 'dsn-spacer' }),
-          h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving, onClick: () => submit(false) },
+          h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving || Boolean(generating || composing), onClick: () => submit(false) },
             saving ? '保存中…' : '保存'),
           h('button', {
             className: 'dsn-btn primary',
             type: 'button',
-            disabled: !savedAt || Boolean(generating) || !chapter,
-            onClick: () => startJob('/generate'),
+            disabled: !savedAt || Boolean(generating || composing) || !chapter,
+            onClick: generate,
           }, generating ? '生成中…' : '生成章节故事')));
     }
 
@@ -964,6 +1021,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, composing ? '自动推演中…' : '自动推演'))));
     }
 
+    /** A plain yes/no dialog for an action that overwrites something. */
+    function ConfirmDialog({ title, text, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(440px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, title),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body', style: { gridTemplateColumns: '1fr' } },
+            h('div', { className: 'dsn-text', style: { fontSize: 12 } }, text)),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, cancelLabel || '取消'),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onConfirm }, confirmLabel || '确定'))));
+    }
+
     /* --------------------------------------------------------- leave confirm */
 
     /** Asked whenever unsaved chapter text or outline edits would be left behind. */
@@ -994,6 +1066,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
       const [pendingLeave, setPendingLeave] = useState(null);
+      const [confirmRequest, setConfirmRequest] = useState(null);
       const outlineGuard = useRef({ isDirty: () => false, save: async () => true, reset: () => {} });
       const registerOutlineGuard = useCallback((guard) => {
         outlineGuard.current = guard || { isDirty: () => false, save: async () => true, reset: () => {} };
@@ -1175,7 +1248,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               },
               notify,
               onRegisterGuard: registerOutlineGuard,
+              requestConfirm: setConfirmRequest,
             }))),
+        confirmRequest
+          ? h(ConfirmDialog, {
+            title: confirmRequest.title,
+            text: confirmRequest.text,
+            confirmLabel: confirmRequest.confirmLabel,
+            onCancel: () => setConfirmRequest(null),
+            onConfirm: async () => {
+              const request = confirmRequest;
+              setConfirmRequest(null);
+              await request.action();
+            },
+          })
+          : null,
         pendingLeave
           ? h(LeaveConfirm, {
             what: pendingLeave.page === 'outline' ? '这份章节大纲' : '这一章的正文',

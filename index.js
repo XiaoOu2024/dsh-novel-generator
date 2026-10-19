@@ -560,7 +560,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.4',
+    revision: '2026-10-20.5',
     projects: await listProjects(root),
     models: {
       default: modelCatalog.default || null,
@@ -810,8 +810,10 @@ function startGenerate(ctx, root, registry, body) {
 }
 
 /**
- * One click from the new-chapter dialog: deduce the synopsis and the title,
- * write the chapter, then run the same snapshot check a generated chapter does.
+ * Deduce the synopsis and the title, write the chapter, then run the same
+ * snapshot check a generated chapter does. With `chapterId` it regenerates that
+ * chapter in place (the outline page's 自动推演, which overwrites everything);
+ * without it the job appends a new one (the new-chapter dialog).
  */
 function startCompose(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
@@ -825,12 +827,20 @@ function startCompose(ctx, root, registry, body) {
     if (maxWords < minWords) throw httpError(400, '最多字数不能小于最低字数');
 
     const project = await readProject(root, projectId);
-    const startDay = Number.isFinite(Number(body.startDay))
-      ? Math.max(0, Math.round(Number(body.startDay)))
-      : lastChapterEnd(project);
+    const existingId = asText(body.chapterId);
+    const existing = existingId === ''
+      ? null
+      : (project.chapters || []).find((entry) => entry.chapterId === existingId) || null;
+    if (existingId !== '' && !existing) throw httpError(404, `章节不存在: ${existingId}`);
+
+    const startDay = existing
+      ? existing.startDay
+      : (Number.isFinite(Number(body.startDay))
+        ? Math.max(0, Math.round(Number(body.startDay)))
+        : lastChapterEnd(project));
     const draft = {
-      chapterId: randomUUID(),
-      index: nextChapterIndex(project),
+      chapterId: existing ? existing.chapterId : randomUUID(),
+      index: existing ? existing.index : nextChapterIndex(project),
       title: asText(body.title),
       startDay,
       durationDays,
@@ -845,6 +855,7 @@ function startCompose(ctx, root, registry, body) {
     if (synopsis === '') throw httpError(502, '模型没有给出章节梗概');
     const title = draft.title
       || asText(firstOf(deduced, ['title', '标题']))
+      || (existing && existing.title)
       || `第 ${draft.index + 1} 章`;
     const outline = {
       synopsis,
@@ -856,17 +867,25 @@ function startCompose(ctx, root, registry, body) {
     };
 
     const chapterId = await mutateProject(root, projectId, (current) => {
-      current.chapters.push({
-        ...draft,
-        title,
-        outline,
-        content: '',
-        wordCount: 0,
-        status: 'outlined',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        generatedAt: null,
-      });
+      const target = current.chapters.find((entry) => entry.chapterId === draft.chapterId);
+      if (target) {
+        target.title = title;
+        target.durationDays = durationDays;
+        target.outline = outline;
+        target.updatedAt = Date.now();
+      } else {
+        current.chapters.push({
+          ...draft,
+          title,
+          outline,
+          content: '',
+          wordCount: 0,
+          status: 'outlined',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          generatedAt: null,
+        });
+      }
       return draft.chapterId;
     });
 
@@ -892,7 +911,13 @@ function startCompose(ctx, root, registry, body) {
     if (snapshotDue(after, window.end)) {
       snapshotJobId = registerSnapshot(ctx, root, registry, projectId, window.end).jobId;
     }
-    return { chapterId, title, wordCount: wordCount(content), snapshotJobId };
+    return {
+      chapterId,
+      title,
+      synopsis,
+      wordCount: wordCount(content),
+      snapshotJobId,
+    };
   });
 }
 
