@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
 
     const API = '/dsh-novel-studio/api';
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const UNIT_CHOICES = [30, 90, 365];
+    const UNIT_CHOICES = [7, 15, 30, 90, 180, 365];
     const DEFAULT_SYNOPSIS_MIN = 100;
 
     /* ------------------------------------------------------- shared state */
@@ -169,10 +169,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-timeline{padding:12px 16px 4px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .dsn-timeline-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .dsn-date{font-size:16px;font-weight:600;letter-spacing:.02em}
-.dsn-units{display:flex;gap:6px}
-.dsn-unit{height:24px;padding:0 10px;border-radius:999px;font:inherit;font-size:11px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary)}
-.dsn-unit.on{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}
+.dsn-units{display:flex;align-items:center;gap:6px}
+.dsn-unit-input{width:78px;height:26px;padding:2px 8px;text-align:right;font-size:12px}
 .dsn-range{width:100%;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:2px 0 0}
 .dsn-range:disabled{cursor:default;opacity:.5}
 .dsn-trackwrap{position:relative;padding:2px 0 0}
@@ -445,6 +443,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
      * that stretch, so the slider has to reach it.
      */
     function Timeline({ detail, unitDays, day, onChange }) {
+      const [unitText, setUnitText] = useState(String(unitDays));
+      useEffect(() => {
+        setUnitText(String(unitDays));
+      }, [unitDays]);
       const snapshots = detail.snapshots || [];
       const facts = detail.timelineFacts || {};
       const latest = facts.latestSnapshotDay !== undefined
@@ -467,13 +469,34 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               ? '还没有世界快照'
               : `第 ${day} / ${max} 天 · 已写入 ${snapshots.length} 份快照${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
           h('div', { className: 'dsn-spacer' }),
-          h('div', { className: 'dsn-units' }, UNIT_CHOICES.map((unit) => h('button', {
-            key: unit,
-            type: 'button',
-            className: `dsn-unit${unit === unitDays ? ' on' : ''}`,
-            title: `每 ${unit} 天结算一份世界快照`,
-            onClick: () => onChange(unit, day),
-          }, `每 ${unit} 天`)))),
+          h('div', { className: 'dsn-units' },
+            h('span', { className: 'dsn-label' }, '快照间隔'),
+            h('input', {
+              className: 'dsn-input dsn-unit-input',
+              type: 'text',
+              inputMode: 'numeric',
+              list: 'dsn-unit-options',
+              value: unitText,
+              title: '每多少天结算一份世界快照，可从 7 / 15 / 30 / 90 / 180 / 365 里选，也可以直接输入',
+              onChange: (event) => {
+                const text = event.target.value;
+                setUnitText(text);
+                const next = Number(text);
+                if (Number.isInteger(next) && next >= 1) onChange(next, day);
+              },
+              onBlur: () => {
+                const next = Number(unitText);
+                if (Number.isInteger(next) && next >= 1) {
+                  setUnitText(String(next));
+                  if (next !== unitDays) onChange(next, day);
+                } else {
+                  setUnitText(String(unitDays));
+                }
+              },
+            }),
+            h('span', { className: 'dsn-label' }, '天'),
+            h('datalist', { id: 'dsn-unit-options' },
+              UNIT_CHOICES.map((unit) => h('option', { key: unit, value: String(unit) }))))),
         h('div', { className: 'dsn-trackwrap' },
           h('input', {
             className: 'dsn-range',
