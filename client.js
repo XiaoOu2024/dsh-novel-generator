@@ -147,6 +147,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);
   color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:7px 10px;outline:none}
 .dsn-input:focus,.dsn-select:focus,.dsn-textarea:focus{border-color:var(--dsw-alias-brand-primary)}
+.dsn-input.dsn-readonly{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:default}
+.dsn-input.dsn-readonly:focus{border-color:var(--dsw-alias-border-l1)}
 .dsn-path{display:flex;gap:6px}
 .dsn-list{display:flex;flex-direction:column;gap:8px}
 .dsn-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
@@ -305,7 +307,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const pickDirectory = useCallback(async () => {
         if (!workspace || typeof workspace.pickDirectory !== 'function') {
-          setError('当前界面无法调用目录选择器，请手动填写工作目录的绝对路径');
+          setError('当前界面无法调用目录选择器，这个部署暂时不能创建作品');
           return;
         }
         try {
@@ -319,7 +321,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const create = useCallback(async () => {
         setError('');
         if (!cwd.trim()) {
-          setError('请选择或填写工作目录');
+          setError('请先点「选择」挑一个工作目录');
           return;
         }
         setBusy(true);
@@ -364,10 +366,11 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('span', { className: 'dsn-label' }, '工作目录'),
             h('div', { className: 'dsn-path' },
               h('input', {
-                className: 'dsn-input',
+                className: 'dsn-input dsn-readonly',
                 value: cwd,
-                placeholder: '会话的工作目录（绝对路径）',
-                onChange: (event) => setCwd(event.target.value),
+                readOnly: true,
+                title: cwd || '只能通过右侧「选择」挑选目录',
+                placeholder: '点右侧「选择」挑一个目录',
               }),
               h('button', { className: 'dsn-btn ghost', type: 'button', onClick: pickDirectory }, '选择'))),
           h('label', { className: 'dsn-field' },
