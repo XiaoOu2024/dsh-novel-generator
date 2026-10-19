@@ -1,5 +1,5 @@
 /**
- * dsh-novel-timeline — Client half.
+ * dsh-novel-generator — Client half.
  *
  * A frame-wide studio owned by two slots: a launcher at the sidebar foot and a
  * full-window overlay. The overlay holds the project list, the draggable
@@ -7,13 +7,13 @@
  * chapter outline, which slide horizontally past one another.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-novel-timeline',
+  id: 'dsh-novel-generator',
   factory(require) {
     const React = require('react');
     const { useCallback, useEffect, useMemo, useRef, useState } = React;
     const h = React.createElement;
 
-    const API = '/dsh-novel-timeline/api';
+    const API = '/dsh-novel-generator/api';
     const UNIT_CHOICES = [7, 15, 30, 90, 180, 365];
     const DEFAULT_SYNOPSIS_MIN = 100;
 

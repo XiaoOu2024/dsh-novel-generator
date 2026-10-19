@@ -1,5 +1,5 @@
 /**
- * dsh-novel-timeline — Host half.
+ * dsh-novel-generator — Host half.
  *
  * Owns the durable novel-project store (projects, timelines, chapters and world
  * snapshots), the HTTP surface the browser half talks to, and the Agent work
@@ -15,11 +15,11 @@ import { mkdir, readFile, readdir, rename, rm, rmdir, unlink, writeFile } from '
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
-export const name = 'dsh-novel-timeline';
+export const name = 'dsh-novel-generator';
 export const inject = ['webServer'];
 
 /** Exact API prefix; the Client half fetches below it. */
-const ROUTE_PREFIX = '/dsh-novel-timeline/api';
+const ROUTE_PREFIX = '/dsh-novel-generator/api';
 /** Largest accepted JSON body: a long chapter plus its outline. */
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 /** A generation can legitimately take minutes on a long chapter. */

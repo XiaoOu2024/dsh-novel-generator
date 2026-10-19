@@ -1,17 +1,17 @@
-# 小说工坊 · dsh-novel-timeline
+# 小说工坊 · dsh-novel-generator
 
 DSH 的常驻插件：在时间线上写小说。每个作品绑定一个普通会话，章节正文与世界快照都由那个会话里自己的 Agent 生成。
 
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-novel-timeline
-# 或直接装这个仓库：dsh plugin --profile web add https://github.com/XiaoOu2024/dsh-novel-studio
+dsh plugin --profile web add dsh-novel-generator
+# 或直接装这个仓库：dsh plugin --profile web add https://github.com/XiaoOu2024/dsh-novel-generator
 ```
 
 或在 DSH 的 **设置 → 插件** 里安装（本包声明了 `dsh.bundle`）。装好后刷新页面，界面左下角出现「小说工坊」按钮。
 
-> npm 包名是 `dsh-novel-timeline`（`dsh-novel-studio` 已被同名插件占用），GitHub 仓库仍是 `XiaoOu2024/dsh-novel-studio`，两者指同一个插件。
+> npm 包名 `dsh-novel-generator` 与 GitHub 仓库 `XiaoOu2024/dsh-novel-generator` 同名。
 
 需要 **DeepSeek Harness 0.2.1-rc.2 或更新的 0.2.x**：宿主侧调用 `sessionController`（create / selectModel / prompt / resolveAgent）、`workspaceRegistry`（create / resolveByPath / attachSession）与 `agentPresets`，这些在 0.2.1 之前不存在或不稳定。`package.json` 里以 `peerDependencies: { "@deepseek-ai/dsh": "^0.2.1-rc.2" }`（optional）声明，安装环境与本机验证版本一致。
 
@@ -52,7 +52,7 @@ dsh plugin --profile web add dsh-novel-timeline
   - 每次保存正文、生成章节、保存大纲（改标题）、结算快照都会同步刷新这些文件；改标题会顺手删掉旧文件名。
   - 若你在编辑器里直接改章节正文 `.md` 且比插件记录的更新时间更晚，下次打开作品会以文件内容为准（梗概与快照目前是单向导出）。
 - **作品名称就是文件夹名，所以受文件名规则限制**：不能为空、最多 60 字、不能以空格或点开头结尾、不能含 `\ / : * ? " < > |` 与控制字符、不能用 `CON`/`NUL`/`COM1` 等系统保留名。创建界面会即时校验并禁用「创建」按钮。
-- HTTP 接口前缀：`/dsh-novel-timeline/api`，只接受本机页面同源请求。
+- HTTP 接口前缀：`/dsh-novel-generator/api`，只接受本机页面同源请求。
 - 生成、推演、快照都是异步任务：`POST /generate`、`POST /compose`、`POST /deduce`、`POST /snapshot/refresh` 返回 `jobId`，再由 `GET /job?id=` 轮询。
 - `timeline.cursor` 现在以「天」为单位；旧数据（按格计数）在首次读取时自动换算一次并标记 `cursorUnit: "day"`。
 
@@ -69,11 +69,11 @@ node selfcheck-compose.mjs <临时工作目录>  # 自动推演整章，并验�
 
 ## 市场投稿条目
 
-`awesome-dsh-plugin` 的条目（`data/plugins/XiaoOu2024__dsh-novel-studio.yml`）：
+`awesome-dsh-plugin` 的条目（`data/plugins/XiaoOu2024__dsh-novel-generator.yml`）：
 
 ```yaml
-url: https://github.com/XiaoOu2024/dsh-novel-studio
-name: XiaoOu2024/dsh-novel-studio
+url: https://github.com/XiaoOu2024/dsh-novel-generator
+name: XiaoOu2024/dsh-novel-generator
 category: ui
 description:
   en: 'Novel generator: builds a world snapshot along a story timeline and, from the latest snapshot and the most recent chapters, deduces the next chapter.'

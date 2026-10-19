@@ -1,6 +1,6 @@
 {
-  "name": "dsh-novel-timeline",
-  "version": "0.1.1",
+  "name": "dsh-novel-generator",
+  "version": "0.1.0",
   "type": "module",
   "description": "Novel studio for DeepSeek Harness: a draggable story timeline, world snapshots, chapter outlines, and chapters written by the work's own agent.",
   "license": "MIT",
@@ -14,11 +14,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/XiaoOu2024/dsh-novel-studio.git"
+    "url": "git+https://github.com/XiaoOu2024/dsh-novel-generator.git"
   },
-  "homepage": "https://github.com/XiaoOu2024/dsh-novel-studio#readme",
+  "homepage": "https://github.com/XiaoOu2024/dsh-novel-generator#readme",
   "bugs": {
-    "url": "https://github.com/XiaoOu2024/dsh-novel-studio/issues"
+    "url": "https://github.com/XiaoOu2024/dsh-novel-generator/issues"
   },
   "exports": {
     ".": "./index.js",

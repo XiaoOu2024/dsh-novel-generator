@@ -93,3 +93,8 @@ index.js	|	2026-10-20 11:00	|	插件名与路由前缀改为 dsh-novel-timeline
 client.js	|	2026-10-20 11:00	|	模块 id 与 API 前缀跟随改名
 README.md	|	2026-10-20 11:00	|	补 npm 包名与仓库名不同的说明
 package.json	|	2026-10-20 11:05	|	版本 0.1.1（修正 README 后重新发布）
+package.json	|	2026-10-20 11:20	|	改名为 dsh-novel-generator，版本回到 0.1.0，仓库地址指向新仓库名
+cordis.patch.yml	|	2026-10-20 11:20	|	行 id/name 改为 dsh-novel-generator
+index.js	|	2026-10-20 11:20	|	插件名与路由改为 /dsh-novel-generator/api
+client.js	|	2026-10-20 11:20	|	模块 id 与 API 前缀改为 dsh-novel-generator
+README.md	|	2026-10-20 11:20	|	全文改名为 dsh-novel-generator

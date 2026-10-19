@@ -1,4 +1,4 @@
 - insert:
-    - id: dsh-novel-timeline
-      name: 'dsh-novel-timeline'
+    - id: dsh-novel-generator
+      name: 'dsh-novel-generator'
       config: {}
