@@ -14,7 +14,6 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const API = '/dsh-novel-studio/api';
-    const DAY_MS = 24 * 60 * 60 * 1000;
     const UNIT_CHOICES = [7, 15, 30, 90, 180, 365];
     const DEFAULT_SYNOPSIS_MIN = 100;
 
@@ -57,14 +56,6 @@ window.__ModuleLoader__.load({
         throw new Error((payload && payload.error) || `请求失败（HTTP ${response.status}）`);
       }
       return payload;
-    }
-
-    function dateForDay(detail, day) {
-      const origin = detail && detail.timeline && /^\d{4}-\d{2}-\d{2}$/.test(detail.timeline.origin)
-        ? detail.timeline.origin
-        : '2026-01-01';
-      const base = Date.parse(`${origin}T00:00:00Z`);
-      return new Date(base + Math.round(day) * DAY_MS).toISOString().slice(0, 10);
     }
 
     function chapterWindow(detail, chapter) {
@@ -474,11 +465,11 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       return h('div', { className: 'dsn-timeline' },
         h('div', { className: 'dsn-timeline-head' },
-          h('div', { className: 'dsn-date' }, dateForDay(detail, day)),
+          h('div', { className: 'dsn-date' }, `第 ${day} 天`),
           h('div', { className: 'dsn-sub' },
             max === 0
               ? '还没有世界快照'
-              : `第 ${day} / ${max} 天 · 每 ${unitDays} 天一份快照 · 已写入 ${snapshots.length} 份${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
+              : `共 ${max} 天 · 每 ${unitDays} 天一份快照 · 已写入 ${snapshots.length} 份${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
           h('div', { className: 'dsn-spacer' }),
           h('div', { className: 'dsn-units' },
             h('span', { className: 'dsn-label' }, '快照间隔'),
@@ -539,18 +530,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 key: `snap-${mark}`,
                 className: 'dsn-mark',
                 style: { left: `${(mark / max) * 100}%` },
-                title: `快照 · ${dateForDay(detail, mark)}`,
+                title: `快照 · 第 ${mark} 天`,
               })),
               nextDay > latest && nextDay <= max
                 ? h('span', {
                   key: 'next',
                   className: 'dsn-mark next',
                   style: { left: `${(nextDay / max) * 100}%` },
-                  title: `下一个快照点 · 第 ${nextDay} 天（${dateForDay(detail, nextDay)}）`,
+                  title: `下一个快照点 · 第 ${nextDay} 天`,
                 })
                 : null)
             : null),
-        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, dateForDay(detail, tick)))),
+        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, tick === max ? `${tick} 天` : String(tick)))),
         max === 0
           ? h('div', { className: 'dsn-hint' }, `生成章节后，故事时间每走过 ${unitDays} 天就会写入第一份世界快照，时间线随之生长。`)
           : null);
@@ -610,7 +601,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const askSnapshot = useCallback(() => {
         requestConfirm({
           title: '是否为当前时间生成世界快照？',
-          text: `将为第 ${day} 天（${dateForDay(detail, day)}）生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。`,
+          text: `将为第 ${day} 天生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。`,
           confirmLabel: '生成快照',
           action: () => onRefreshSnapshot(day),
         });
@@ -783,7 +774,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-pagehead' },
           h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 时间长河'),
           h('div', { className: 'dsn-title' }, chapter ? `第 ${chapter.index + 1} 章 · ${chapter.title || '未命名'}` : '章节故事'),
-          h('div', { className: 'dsn-sub' }, window ? `${dateForDay(detail, window.start)} → ${dateForDay(detail, window.end)}` : ''),
+          h('div', { className: 'dsn-sub' }, window ? `第 ${window.start} → ${window.end} 天` : ''),
           h('div', { className: 'dsn-spacer' }),
           previous
             ? h('button', {
@@ -991,7 +982,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-pagehead' },
           h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 章节故事'),
           h('div', { className: 'dsn-title' }, chapter ? `章节大纲 · 第 ${chapter.index + 1} 章` : '章节大纲 · 新章节'),
-          h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0))}`),
+          h('div', { className: 'dsn-sub' }, `起始 第 ${chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0)} 天`),
           h('div', { className: 'dsn-spacer' }),
           h('button', {
             className: 'dsn-btn ghost',
@@ -1165,7 +1156,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         h('div', { className: 'dsn-dialog' },
           h('div', { className: 'dsn-dialog-head' },
             h('div', { className: 'dsn-title' }, '新建章节'),
-            h('div', { className: 'dsn-sub' }, `起始 ${dateForDay(detail, startDay)}`),
+            h('div', { className: 'dsn-sub' }, `起始 第 ${startDay} 天`),
             h('div', { className: 'dsn-spacer' }),
             h('button', {
               className: 'dsn-btn ghost',
