@@ -569,7 +569,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.8',
+    revision: '2026-10-20.9',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -646,6 +646,37 @@ async function createProject(ctx, root, body) {
     warning,
     workspace: workspace ? { workspaceId: workspace.id, title: workspace.title, path: workspace.path } : null,
   };
+}
+
+/**
+ * Change a project's model and carry it into the project's own Session, the
+ * same switch the chat UI's model picker performs.
+ */
+async function updateModel(ctx, root, body) {
+  const projectId = asText(body.projectId);
+  const provider = asText(body.model && body.model.provider);
+  const model = asText(body.model && body.model.model);
+  const reasoningEffort = asText(body.model && body.model.reasoningEffort);
+  if (provider === '' || model === '') throw httpError(400, '请选择要切换的模型');
+  const next = { provider, model, ...(reasoningEffort === '' ? {} : { reasoningEffort }) };
+
+  const project = await readProject(root, projectId);
+  let warning = null;
+  if (project.sessionId) {
+    const controller = ctx.get('sessionController');
+    if (controller && typeof controller.selectModel === 'function') {
+      try {
+        await controller.selectModel({ sessionId: project.sessionId, ...next });
+      } catch (error) {
+        warning = `作品已记录该模型，但会话切换失败：${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+  }
+  const projectSummary = await mutateProject(root, projectId, (draft) => {
+    draft.model = next;
+    return summarize(draft);
+  });
+  return { project: projectSummary, warning };
 }
 
 async function updateTimeline(root, body) {
@@ -1080,6 +1111,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
     }
     case '/project/timeline':
       return updateTimeline(root, body);
+    case '/project/model':
+      return updateModel(ctx, root, body);
     case '/outline/save':
       return saveOutline(root, body);
     case '/chapter/save':

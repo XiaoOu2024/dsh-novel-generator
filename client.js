@@ -286,7 +286,86 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* -------------------------------------------------------- projects page */
 
-    function ProjectsPage({ boot, workspace, onOpen, onReload }) {
+    /** Display name of a stored model selection. */
+    function modelLabel(models, selection) {
+      if (!selection || !selection.provider || !selection.model) return '默认模型';
+      const groups = (models && models.groups) || [];
+      const group = groups.find((entry) => entry.id === selection.provider);
+      const model = group && group.models.find((entry) => entry.id === selection.model);
+      return model ? model.name : `${selection.provider} / ${selection.model}`;
+    }
+
+    /** Change one project's model; the Host also switches its Session. */
+    function ModelDialog({ project, models, onCancel, onSaved }) {
+      const groups = (models && models.groups) || [];
+      const current = project.model || (models && models.default) || null;
+      const [provider, setProvider] = useState(
+        current && current.provider ? current.provider : (groups[0] ? groups[0].id : ''),
+      );
+      const [model, setModel] = useState(current && current.model ? current.model : '');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const list = (groups.find((entry) => entry.id === provider) || { models: [] }).models;
+
+      useEffect(() => {
+        if (list.length && !list.some((entry) => entry.id === model)) setModel(list[0].id);
+      }, [provider]);
+
+      const save = useCallback(async () => {
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api('/project/model', {
+            projectId: project.projectId,
+            model: { provider, model },
+          });
+          await onSaved(result.warning || '');
+        } catch (saveError) {
+          setError(messageOf(saveError));
+        } finally {
+          setBusy(false);
+        }
+      }, [project.projectId, provider, model, onSaved]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(460px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, '修改作品模型'),
+            h('div', { className: 'dsn-sub' }, project.title),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, '模型'),
+              h('select', {
+                className: 'dsn-select',
+                value: provider,
+                onChange: (event) => setProvider(event.target.value),
+              }, groups.length === 0
+                ? h('option', { value: '' }, '未发现可用模型')
+                : groups.map((group) => h('option', { key: group.id, value: group.id }, group.name)))),
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, '模型实例'),
+              h('select', {
+                className: 'dsn-select',
+                value: model,
+                onChange: (event) => setModel(event.target.value),
+              }, list.length === 0
+                ? h('option', { value: '' }, '—')
+                : list.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name)))),
+            h('div', { className: 'dsn-hint span2' }, '切换后会同时改到这部作品绑定的会话上。'),
+            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, '取消'),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy || !provider || !model,
+              onClick: save,
+            }, busy ? '保存中…' : '保存'))));
+    }
+
+    function ProjectsPage({ boot, workspace, onOpen, onReload, onEditModel }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -424,9 +503,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('div', { className: 'dsn-row-main', style: { flex: 1 } },
               h('div', { className: 'dsn-row-name' }, project.title),
               h('div', { className: 'dsn-row-meta' },
-                `${project.chapterCount} 章 · ${project.snapshotCount} 个快照 · ${project.cwd}`),
+                `${project.chapterCount} 章 · ${project.snapshotCount} 个快照 · 模型：${modelLabel(boot.models, project.model)}`),
               h('div', { className: 'dsn-row-meta' },
-                `更新于 ${formatTime(project.updatedAt)}${project.lastChapterTitle ? ` · 最近：${project.lastChapterTitle}` : ''}`)),
+                `${project.cwd} · 更新于 ${formatTime(project.updatedAt)}${project.lastChapterTitle ? ` · 最近：${project.lastChapterTitle}` : ''}`)),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: '修改这部作品使用的模型',
+              onClick: (event) => {
+                event.stopPropagation();
+                onEditModel(project);
+              },
+            }, '模型'),
             h('button', {
               className: 'dsn-btn danger ghost',
               type: 'button',
@@ -1511,6 +1599,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [projectId, setProjectId] = useState(null);
       const [detail, setDetail] = useState(null);
       const [toast, setToast] = useToast();
+      const [modelTarget, setModelTarget] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
         leaveGuard.current = guard;
@@ -1588,7 +1677,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入…')
             : projectId === null
               ? h('div', { className: 'dsn-scroll' },
-                h(ProjectsPage, { boot, workspace, onOpen: openProject, onReload: loadBoot }))
+                h(ProjectsPage, {
+                  boot,
+                  workspace,
+                  onOpen: openProject,
+                  onReload: loadBoot,
+                  onEditModel: setModelTarget,
+                }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入作品…')
                 : h(ProjectWorkspace, {
@@ -1597,7 +1692,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onReload: reloadDetail,
                   notify,
                   onRegisterLeaveGuard: registerLeaveGuard,
-                })));
+                })),
+        modelTarget
+          ? h(ModelDialog, {
+            project: modelTarget,
+            models: boot ? boot.models : null,
+            onCancel: () => setModelTarget(null),
+            onSaved: async (warning) => {
+              const target = modelTarget;
+              setModelTarget(null);
+              await loadBoot();
+              if (target && projectId === target.projectId) await loadDetail(target.projectId);
+              if (warning) setError(warning);
+            },
+          })
+          : null);
     }
 
     function StudioOverlay({ workspace }) {
