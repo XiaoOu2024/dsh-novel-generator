@@ -92,3 +92,4 @@ cordis.patch.yml	|	2026-10-20 11:00	|	行 id/name 跟随改名
 index.js	|	2026-10-20 11:00	|	插件名与路由前缀改为 dsh-novel-timeline
 client.js	|	2026-10-20 11:00	|	模块 id 与 API 前缀跟随改名
 README.md	|	2026-10-20 11:00	|	补 npm 包名与仓库名不同的说明
+package.json	|	2026-10-20 11:05	|	版本 0.1.1（修正 README 后重新发布）
