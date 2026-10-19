@@ -1,9 +1,25 @@
 {
   "name": "dsh-novel-studio",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Novel studio for DeepSeek Harness: draggable story timeline, world snapshots, chapter outlines and agent-generated chapters.",
+  "description": "Novel studio for DeepSeek Harness: a draggable story timeline, world snapshots, chapter outlines, and chapters written by the work's own agent.",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "novel",
+    "writing",
+    "timeline",
+    "worldbuilding"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XiaoOu2024/dsh-novel-studio.git"
+  },
+  "homepage": "https://github.com/XiaoOu2024/dsh-novel-studio#readme",
+  "bugs": {
+    "url": "https://github.com/XiaoOu2024/dsh-novel-studio/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -16,7 +32,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

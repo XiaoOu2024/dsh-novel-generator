@@ -11,7 +11,7 @@
  * UI and watch (or correct) the very same agent the generator drives.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -62,7 +62,13 @@ async function readProject(root, projectId) {
   } catch {
     throw httpError(404, `作品不存在: ${projectId}`);
   }
-  return migrateProject(JSON.parse(text));
+  const project = migrateProject(JSON.parse(text));
+  // Prose, synopses and snapshot bodies come from the work folder; a record
+  // that still carries them inline is a leftover and is rewritten in the new
+  // shape once.
+  const legacy = await hydrateChapterFiles(project);
+  if (legacy) await persistProject(root, project);
+  return project;
 }
 
 /* ------------------------------------------------- chapter files on disk */
@@ -132,6 +138,27 @@ function projectInfoFile(project) {
   return join(projectContentDir(project), '作品信息.md');
 }
 
+/** Machine-readable snapshot next to its human card. */
+function snapshotJsonPaths(project, snapshot) {
+  const day = String(Math.max(0, Math.round(Number(snapshot.day) || 0))).padStart(3, '0');
+  const dir = join(projectContentDir(project), '世界快照');
+  return {
+    dir,
+    file: join(dir, `第${day}天.json`),
+  };
+}
+
+/** The synopsis body of an outline card (`（还没有写梗概）` reads as empty). */
+function parseSynopsis(text) {
+  const marker = '## 故事梗概';
+  const start = text.indexOf(marker);
+  if (start === -1) return '';
+  const rest = text.slice(start + marker.length);
+  const next = rest.indexOf('\n## ');
+  const body = (next === -1 ? rest : rest.slice(0, next)).trim();
+  return body === '（还没有写梗概）' ? '' : body;
+}
+
 /** Delete a file an earlier build wrote straight into the working directory. */
 async function dropLegacyFile(legacyPath, expected) {
   try {
@@ -144,8 +171,9 @@ async function dropLegacyFile(legacyPath, expected) {
 
 /** Mirror one chapter's prose into the work folder under the chosen directory. */
 async function exportChapter(project, chapter, content) {
-  if (!project || !project.cwd) return;
+  if (!project || !project.cwd) return false;
   const body = typeof content === 'string' ? content : (chapter.content || '');
+  let ok = true;
   try {
     const target = chapterPaths(project, chapter);
     await mkdir(target.dir, { recursive: true });
@@ -155,9 +183,11 @@ async function exportChapter(project, chapter, content) {
     await dropLegacyFile(join(project.cwd, basename(target.file)), body);
   } catch {
     // A deleted or read-only directory must not fail the save itself.
+    ok = false;
   }
   await exportChapterOutline(project, chapter);
   await exportProjectInfo(project);
+  return ok;
 }
 
 /** Write the outline card (synopsis and its parameters) for one chapter. */
@@ -254,7 +284,7 @@ async function removeChapterFile(project, chapter) {
 
 /** Write one world snapshot as a readable markdown card. */
 async function exportSnapshot(project, snapshot) {
-  if (!project || !project.cwd) return;
+  if (!project || !project.cwd) return false;
   try {
     const target = snapshotPaths(project, snapshot);
     await mkdir(target.dir, { recursive: true });
@@ -290,6 +320,16 @@ async function exportSnapshot(project, snapshot) {
       lines.push('');
     }
     await writeFile(target.file, lines.join('\n'), 'utf8');
+    // The machine-readable body the Client renders from.
+    const data = snapshotJsonPaths(project, snapshot);
+    await writeFile(data.file, JSON.stringify({
+      unitDays: snapshot.unitDays,
+      world: snapshot.world || '',
+      characters: snapshot.characters || [],
+      factions: snapshot.factions || [],
+      relations: snapshot.relations || [],
+      summary: snapshot.summary || '',
+    }, null, 2), 'utf8');
     // Same one-time move for the snapshot folder the earlier build created
     // beside the working directory.
     const body = lines.join('\n');
@@ -299,43 +339,143 @@ async function exportSnapshot(project, snapshot) {
     } catch {
       // Not empty or already gone.
     }
+    return true;
   } catch {
-    // Best effort: the JSON record stays the source of truth.
+    // Best effort: the index keeps an inline copy when the folder refuses.
+    return false;
   }
 }
 
 /**
- * Keep the working directory in step with the store: write a file for every
- * chapter, and take a newer file back (the user may have edited it in an
- * editor) so an external edit is what the next save and generation use.
+ * The store keeps parameters only: chapter prose, synopses and snapshot bodies
+ * live in the work folder. This is the shape written to `project.json`, with an
+ * inline copy kept only for a file the work folder refused to take.
  */
-async function syncChapterFiles(project) {
-  if (!project || !project.cwd) return;
-  for (const chapter of project.chapters || []) {
-    const target = chapterPaths(project, chapter);
-    try {
-      const info = await stat(target.file);
-      const updated = Number(chapter.updatedAt) || 0;
-      if (info.mtimeMs > updated + 1000) {
-        const text = await readFile(target.file, 'utf8');
-        if (text !== chapter.content) {
-          chapter.content = text;
-          chapter.wordCount = wordCount(text);
-        }
+function strippedProject(project, unwritten) {
+  const index = {
+    ...project,
+    chapters: (project.chapters || []).map((chapter) => {
+      const outline = chapter.outline || null;
+      const record = {
+        chapterId: chapter.chapterId,
+        index: chapter.index,
+        title: chapter.title,
+        startDay: chapter.startDay,
+        durationDays: chapter.durationDays,
+        wordCount: chapter.wordCount || 0,
+        status: chapter.status || 'draft',
+        createdAt: chapter.createdAt,
+        updatedAt: chapter.updatedAt,
+        generatedAt: chapter.generatedAt === undefined ? null : chapter.generatedAt,
+        outlineParams: outline
+          ? {
+            minWords: outline.minWords,
+            maxWords: outline.maxWords,
+            synopsisMinChars: outline.synopsisMinChars,
+            savedAt: outline.savedAt,
+          }
+          : null,
+      };
+      if (unwritten && unwritten.has(chapter.chapterId)) {
+        record.content = chapter.content || '';
+        record.synopsis = outline ? outline.synopsis || '' : '';
       }
-    } catch {
-      await exportChapter(project, chapter, chapter.content);
-    }
-    await exportChapterOutline(project, chapter);
+      return record;
+    }),
+    snapshots: (project.snapshots || []).map((snapshot) => {
+      const record = {
+        snapshotId: snapshot.snapshotId,
+        day: snapshot.day,
+        createdAt: snapshot.createdAt,
+      };
+      if (unwritten && unwritten.has(snapshot.snapshotId)) {
+        Object.assign(record, {
+          unitDays: snapshot.unitDays,
+          world: snapshot.world,
+          characters: snapshot.characters,
+          factions: snapshot.factions,
+          relations: snapshot.relations,
+          summary: snapshot.summary,
+        });
+      }
+      return record;
+    }),
+  };
+  if (project.timelineFacts !== undefined) delete index.timelineFacts;
+  return index;
+}
+
+/** Write every content file, then the parameter-only index. */
+async function persistProject(root, project) {
+  const unwritten = new Set();
+  for (const chapter of project.chapters || []) {
+    const ok = await exportChapter(project, chapter, chapter.content);
+    if (!ok) unwritten.add(chapter.chapterId);
   }
   for (const snapshot of project.snapshots || []) {
-    try {
-      await stat(snapshotPaths(project, snapshot).file);
-    } catch {
-      await exportSnapshot(project, snapshot);
-    }
+    const ok = await exportSnapshot(project, snapshot);
+    if (!ok) unwritten.add(snapshot.snapshotId);
   }
   await exportProjectInfo(project);
+  await writeJson(projectFile(root, project.projectId), strippedProject(project, unwritten));
+}
+
+/** Read one chapter's prose and synopsis back from the work folder. */
+async function hydrateChapterFiles(project) {
+  let legacy = false;
+  for (const chapter of project.chapters || []) {
+    let content = null;
+    let card = null;
+    try {
+      content = await readFile(chapterPaths(project, chapter).file, 'utf8');
+    } catch {
+      content = null;
+    }
+    try {
+      card = await readFile(chapterOutlinePaths(project, chapter).file, 'utf8');
+    } catch {
+      card = null;
+    }
+    if (content === null && typeof chapter.content === 'string') {
+      content = chapter.content;
+      legacy = true;
+    }
+    let synopsis = card === null ? null : parseSynopsis(card);
+    if (synopsis === null && typeof chapter.synopsis === 'string') synopsis = chapter.synopsis;
+    const params = chapter.outlineParams
+      || (chapter.outline
+        ? {
+          minWords: chapter.outline.minWords,
+          maxWords: chapter.outline.maxWords,
+          synopsisMinChars: chapter.outline.synopsisMinChars,
+          savedAt: chapter.outline.savedAt,
+        }
+        : null);
+    if (chapter.outline || chapter.synopsis !== undefined || chapter.content !== undefined) legacy = true;
+    chapter.content = content === null ? '' : content;
+    chapter.outline = params || (synopsis || '') !== ''
+      ? {
+        ...(params || {}),
+        durationDays: chapter.durationDays,
+        synopsis: synopsis || '',
+        savedAt: (params && params.savedAt) || 0,
+      }
+      : null;
+    delete chapter.outlineParams;
+    delete chapter.synopsis;
+  }
+  for (const snapshot of project.snapshots || []) {
+    if (snapshot.world !== undefined) {
+      legacy = true;
+      continue;
+    }
+    try {
+      Object.assign(snapshot, JSON.parse(await readFile(snapshotJsonPaths(project, snapshot).file, 'utf8')));
+    } catch {
+      // A snapshot whose sidecar is gone simply has no body to show.
+    }
+  }
+  return legacy;
 }
 
 /**
@@ -414,7 +554,7 @@ async function mutateProject(root, projectId, mutate) {
     const project = await readProject(root, projectId);
     const result = await mutate(project);
     project.updatedAt = Date.now();
-    await writeJson(projectFile(root, projectId), project);
+    await persistProject(root, project);
     return result === undefined ? project : result;
   });
 }
@@ -842,7 +982,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.12',
+    revision: '2026-10-20.13',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1398,9 +1538,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
   if (method === 'GET') {
     if (path === '/bootstrap') return bootstrap(ctx, root);
     if (path === '/project') {
-      const project = await readProject(root, String(url.searchParams.get('projectId') || ''));
-      await syncChapterFiles(project);
-      return withTimelineFacts(project);
+      // Reading already hydrates prose/synopses/snapshots from the work folder.
+      return withTimelineFacts(await readProject(root, String(url.searchParams.get('projectId') || '')));
     }
     if (path === '/job') {
       const job = registry.get(String(url.searchParams.get('id') || ''));

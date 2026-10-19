@@ -1,0 +1,4 @@
+node_modules/
+*.log
+.selfcheck-cwd/
+.DS_Store
