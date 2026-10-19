@@ -10,6 +10,8 @@ dsh plugin --profile web add dsh-novel-studio
 
 或在 DSH 的 **设置 → 插件** 里安装（本包声明了 `dsh.bundle`）。装好后刷新页面，界面左下角出现「小说工坊」按钮。
 
+需要 **DeepSeek Harness 0.2.1-rc.2 或更新的 0.2.x**：宿主侧调用 `sessionController`（create / selectModel / prompt / resolveAgent）、`workspaceRegistry`（create / resolveByPath / attachSession）与 `agentPresets`，这些在 0.2.1 之前不存在或不稳定。`package.json` 里以 `peerDependencies: { "@deepseek-ai/dsh": "^0.2.1-rc.2" }`（optional）声明，安装环境与本机验证版本一致。
+
 ## 打开方式
 
 界面左下角（设置按钮旁）的 **小说工坊** 按钮，点开就是项目管理界面；右上角「关闭」退出。
@@ -61,3 +63,22 @@ node selfcheck-compose.mjs <临时工作目录>  # 自动推演整章，并验�
 ```
 
 脚本默认访问 `http://127.0.0.1:3080`，仅用于本机验证。
+
+## 市场投稿条目
+
+`awesome-dsh-plugin` 的条目（`data/plugins/XiaoOu2024__dsh-novel-studio.yml`）：
+
+```yaml
+url: https://github.com/XiaoOu2024/dsh-novel-studio
+name: XiaoOu2024/dsh-novel-studio
+category: ui
+description:
+  en: 'Novel generator: builds a world snapshot along a story timeline and, from the latest snapshot and the most recent chapters, deduces the next chapter.'
+  zh: '小说生成器：按时间线生成世界快照，通过世界快照和最近章节自动推演新章节。'
+```
+
+投稿前需要：仓库已推送、创建满 1 天、仓库设置了 `dsh-plugin` topic。
+
+## 多语言
+
+界面语言跟随 DSH **设置 → 通用 → 语言**：客户端已接上 `ctx.locale`，并提供了 `useTranslator()`（`t('中文', 'English')`）。目前完成切换的是侧栏入口、工作室标题栏与载入提示；其余界面文案仍是中文，翻译工作是逐条的机械改造（约 500 处），留待后续一轮完成。

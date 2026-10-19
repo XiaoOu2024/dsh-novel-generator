@@ -19,6 +19,41 @@ window.__ModuleLoader__.load({
 
     /* ------------------------------------------------------- shared state */
 
+    /** Set from `apply`; the Harness locale service, when the host ships one. */
+    let localeService = null;
+
+    function readLocaleId() {
+      try {
+        const snapshot = localeService ? localeService.getLocale() : null;
+        if (typeof snapshot === 'string') return snapshot;
+        if (snapshot && typeof snapshot === 'object') {
+          return snapshot.locale || snapshot.id || snapshot.current || 'zh';
+        }
+      } catch {
+        // A snapshot shape we do not know reads as the default.
+      }
+      return 'zh';
+    }
+
+    /** The active locale id, re-rendered whenever Settings → General → Language changes. */
+    function useLocaleId() {
+      const [id, setId] = useState(readLocaleId);
+      useEffect(() => {
+        if (!localeService || typeof localeService.subscribe !== 'function') return undefined;
+        const listener = () => setId(readLocaleId());
+        listener();
+        return localeService.subscribe(listener);
+      }, []);
+      return id;
+    }
+
+    /** Pick the string for the active locale. */
+    function useTranslator() {
+      const locale = useLocaleId();
+      const chinese = String(locale).toLowerCase().startsWith('zh');
+      return useCallback((zh, en) => (chinese ? zh : en), [chinese]);
+    }
+
     const openState = { open: false };
     const openListeners = new Set();
     function setOverlayOpen(next) {
@@ -228,17 +263,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /* ------------------------------------------------------------- launcher */
 
     function Launcher(props) {
+      const t = useTranslator();
       const wide = !props || props.wide !== false;
       return h('button', {
         type: 'button',
         className: 'dsn-launch',
-        title: '小说工坊',
+        title: t('小说工坊', 'Novel Studio'),
         onClick: () => setOverlayOpen(true),
       },
       h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, 'aria-hidden': true },
         h('path', { d: 'M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H4z' }),
         h('path', { d: 'M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h6z' })),
-      wide ? h('span', null, '小说工坊') : null);
+      wide ? h('span', null, t('小说工坊', 'Novel Studio')) : null);
     }
 
     /* --------------------------------------------------------------- toast */
@@ -1608,6 +1644,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /* ------------------------------------------------------------ studio app */
 
     function StudioApp({ workspace }) {
+      const t = useTranslator();
       const [boot, setBoot] = useState(null);
       const [error, setError] = useState('');
       const [projectId, setProjectId] = useState(null);
@@ -1680,15 +1717,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 setDetail(null);
                 loadBoot();
               }),
-            }, '← 作品列表')
-            : h('div', { className: 'dsn-title' }, '小说工坊'),
+            }, t('← 作品列表', '← Projects'))
+            : h('div', { className: 'dsn-title' }, t('小说工坊', 'Novel Studio')),
           projectId && detail ? h('div', { className: 'dsn-sub' }, detail.title) : null,
           h('div', { className: 'dsn-spacer' }),
-          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: close }, '关闭')),
+          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: close }, t('关闭', 'Close'))),
         error ? h('div', { className: 'dsn-error' }, error) : null,
         h('div', { className: 'dsn-body' },
           boot === null
-            ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入…')
+            ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入…', 'Loading…'))
             : projectId === null
               ? h('div', { className: 'dsn-scroll' },
                 h(ProjectsPage, {
@@ -1737,6 +1774,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       inject: ['slots'],
       apply(ctx) {
         const uiWorkspace = ctx.get('uiWorkspace');
+        // Settings → General → Language drives every string that goes through
+        // the translator below; a host without the service stays Chinese.
+        localeService = ctx.get('locale') || null;
         ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
           name: 'sidebar.footer.action',
           id: 'dsh-novel-studio-launch',

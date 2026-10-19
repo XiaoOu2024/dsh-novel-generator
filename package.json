@@ -26,6 +26,14 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.2.1-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
   "files": [
     "index.js",
     "client.js",

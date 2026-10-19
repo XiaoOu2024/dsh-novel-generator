@@ -79,3 +79,6 @@ package.json	|	2026-10-20 09:10	|	发布就绪：去 private、补 license/keywo
 LICENSE	|	2026-10-20 09:10	|	新增 MIT 许可证
 .gitignore	|	2026-10-20 09:10	|	新增插件目录忽略规则
 README.md	|	2026-10-20 09:10	|	补安装说明
+package.json	|	2026-10-20 09:40	|	声明 peerDependencies: @deepseek-ai/dsh ^0.2.1-rc.2（optional）
+client.js	|	2026-10-20 09:40	|	接入 ctx.locale：useTranslator + 侧栏/标题栏跟随语言设置
+README.md	|	2026-10-20 09:40	|	补 dsh 版本要求、市场投稿条目、多语言现状
