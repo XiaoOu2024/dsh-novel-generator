@@ -21,6 +21,8 @@ window.__ModuleLoader__.load({
 
     /** Set from `apply`; the Harness locale service, when the host ships one. */
     let localeService = null;
+    /** Mirrors the Harness language setting for `t()`; 'zh' until it says otherwise. */
+    let activeLocale = 'zh';
 
     function readLocaleId() {
       try {
@@ -44,14 +46,21 @@ window.__ModuleLoader__.load({
         listener();
         return localeService.subscribe(listener);
       }, []);
+      activeLocale = id;
       return id;
     }
 
-    /** Pick the string for the active locale. */
-    function useTranslator() {
-      const locale = useLocaleId();
-      const chinese = String(locale).toLowerCase().startsWith('zh');
-      return useCallback((zh, en) => (chinese ? zh : en), [chinese]);
+    /**
+     * The UI follows Settings → General → Language. Every label is written as
+     * `t('中文', 'English')`; templates pass `{named}` values as the third
+     * argument so the sentence can be re-ordered per language.
+     */
+    function t(zh, en, vars) {
+      let text = String(activeLocale).toLowerCase().startsWith('zh') ? zh : en;
+      if (vars) {
+        text = text.replace(/\{(\w+)\}/g, (match, key) => (vars[key] === undefined ? match : String(vars[key])));
+      }
+      return text;
     }
 
     const openState = { open: false };
@@ -88,7 +97,7 @@ window.__ModuleLoader__.load({
         payload = null;
       }
       if (!response.ok || (payload && payload.error)) {
-        throw new Error((payload && payload.error) || `请求失败（HTTP ${response.status}）`);
+        throw new Error((payload && payload.error) || t('请求失败（HTTP {code}）', 'Request failed (HTTP {code})', { code: response.status }));
       }
       return payload;
     }
@@ -263,7 +272,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /* ------------------------------------------------------------- launcher */
 
     function Launcher(props) {
-      const t = useTranslator();
+      // Subscribes this slot to Settings → General → Language.
+      useLocaleId();
       const wide = !props || props.wide !== false;
       return h('button', {
         type: 'button',
@@ -324,12 +334,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /** The same title rules the Host enforces, so the form can answer first. */
     function titleProblem(title) {
       const text = String(title === undefined || title === null ? '' : title);
-      if (text.trim() === '') return '作品名称不能为空';
-      if (text.length > 60) return '作品名称最多 60 个字符';
-      if (/^[.\s]/.test(text) || /[.\s]$/.test(text)) return '作品名称不能以空格或点开头、结尾';
-      if (/[\\/:*?"<>|]/.test(text)) return '作品名称不能包含 \\ / : * ? " < > |';
-      if (/[\u0000-\u001f]/.test(text)) return '作品名称不能包含控制字符';
-      if (RESERVED_NAMES.test(text.trim())) return '作品名称不能使用 CON、PRN、NUL、COM1 这类系统保留名';
+      if (text.trim() === '') return t('作品名称不能为空', "Title cannot be empty.");
+      if (text.length > 60) return t('作品名称最多 60 个字符', "Title can be at most 60 characters.");
+      if (/^[.\s]/.test(text) || /[.\s]$/.test(text)) return t('作品名称不能以空格或点开头、结尾', "Title cannot start or end with a space or a dot.");
+      if (/[\\/:*?"<>|]/.test(text)) return t('作品名称不能包含 \\ / : * ? " < > |', "Title cannot contain \\\\ / : * ? \" < > |.");
+      if (/[\u0000-\u001f]/.test(text)) return t('作品名称不能包含控制字符', "Title cannot contain control characters.");
+      if (RESERVED_NAMES.test(text.trim())) return t('作品名称不能使用 CON、PRN、NUL、COM1 这类系统保留名', "Title cannot be a reserved name such as CON, PRN, NUL or COM1.");
       return null;
     }
 
@@ -337,7 +347,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /** Display name of a stored model selection. */
     function modelLabel(models, selection) {
-      if (!selection || !selection.provider || !selection.model) return '默认模型';
+      if (!selection || !selection.provider || !selection.model) return t('默认模型', "Default model");
       const groups = (models && models.groups) || [];
       const group = groups.find((entry) => entry.id === selection.provider);
       const model = group && group.models.find((entry) => entry.id === selection.model);
@@ -379,21 +389,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       return h('div', { className: 'dsn-dialog-backdrop' },
         h('div', { className: 'dsn-dialog', style: { width: 'min(460px, calc(100% - 48px))' } },
           h('div', { className: 'dsn-dialog-head' },
-            h('div', { className: 'dsn-title' }, '修改作品模型'),
+            h('div', { className: 'dsn-title' }, t('修改作品模型', "Change work model")),
             h('div', { className: 'dsn-sub' }, project.title),
             h('div', { className: 'dsn-spacer' })),
           h('div', { className: 'dsn-dialog-body' },
             h('label', { className: 'dsn-field span2' },
-              h('span', { className: 'dsn-label' }, '模型'),
+              h('span', { className: 'dsn-label' }, t('模型', "Model")),
               h('select', {
                 className: 'dsn-select',
                 value: provider,
                 onChange: (event) => setProvider(event.target.value),
               }, groups.length === 0
-                ? h('option', { value: '' }, '未发现可用模型')
+                ? h('option', { value: '' }, t('未发现可用模型', "No model available"))
                 : groups.map((group) => h('option', { key: group.id, value: group.id }, group.name)))),
             h('label', { className: 'dsn-field span2' },
-              h('span', { className: 'dsn-label' }, '模型实例'),
+              h('span', { className: 'dsn-label' }, t('模型实例', "Model")),
               h('select', {
                 className: 'dsn-select',
                 value: model,
@@ -401,17 +411,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               }, list.length === 0
                 ? h('option', { value: '' }, '—')
                 : list.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name)))),
-            h('div', { className: 'dsn-hint span2' }, '切换后会同时改到这部作品绑定的会话上。'),
+            h('div', { className: 'dsn-hint span2' }, t('切换后会同时改到这部作品绑定的会话上。', "This also switches the model of the session bound to this work.")),
             error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
           h('div', { className: 'dsn-dialog-foot' },
-            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, '取消'),
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', "Cancel")),
             h('div', { className: 'dsn-spacer' }),
             h('button', {
               className: 'dsn-btn primary',
               type: 'button',
               disabled: busy || !provider || !model,
               onClick: save,
-            }, busy ? '保存中…' : '保存'))));
+            }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
     function ProjectsPage({ boot, workspace, onOpen, onReload, onEditModel }) {
@@ -426,7 +436,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [error, setError] = useState('');
 
       // The title becomes a folder name inside the working directory.
-      const effectiveTitle = title.trim() === '' ? '未命名作品' : title;
+      const effectiveTitle = title.trim() === '' ? t('未命名作品', "Untitled work") : title;
       const titleIssue = titleProblem(effectiveTitle);
 
       const groups = (boot.models && boot.models.groups) || [];
@@ -441,7 +451,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const pickDirectory = useCallback(async () => {
         if (!workspace || typeof workspace.pickDirectory !== 'function') {
-          setError('当前界面无法调用目录选择器，这个部署暂时不能创建作品');
+          setError(t('当前界面无法调用目录选择器，这个部署暂时不能创建作品', "The directory picker is unavailable here, so this deployment cannot create works."));
           return;
         }
         try {
@@ -455,13 +465,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const create = useCallback(async () => {
         setError('');
         if (!cwd.trim()) {
-          setError('请先点「选择」挑一个工作目录');
+          setError(t('请先点「选择」挑一个工作目录', "Pick a working directory with \"Select\" first."));
           return;
         }
         setBusy(true);
         try {
           const result = await api('/project/create', {
-            title: title.trim() || '未命名作品',
+            title: title.trim() || t('未命名作品', "Untitled work"),
             cwd: cwd.trim(),
             agentPreset: preset || undefined,
             model: provider && model ? { provider, model } : null,
@@ -477,7 +487,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [title, cwd, preset, provider, model, onOpen, onReload]);
 
       const remove = useCallback(async (project) => {
-        if (!window.confirm(`确定删除作品「${project.title}」？章节与快照会一并删除，作品的会话本身保留。`)) return;
+        if (!window.confirm(t('确定删除作品「{title}」？章节与快照会一并删除，作品的会话本身保留。', 'Delete the work “{title}”? Its chapters and snapshots go with it; the session itself stays.', { title: project.title }))) return;
         try {
           await api('/project/delete', { projectId: project.projectId });
           await onReload();
@@ -489,37 +499,37 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       return h('div', { className: 'dsn-projects' },
         h('div', { className: 'dsn-create' },
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '作品名称'),
+            h('span', { className: 'dsn-label' }, t('作品名称', "Title")),
             h('input', {
               className: 'dsn-input',
               value: title,
-              placeholder: '例如：长夜将尽',
+              placeholder: t('例如：长夜将尽', "e.g. The Long Night Ends"),
               onChange: (event) => setTitle(event.target.value),
             }),
             h('span', { className: `dsn-hint${titleIssue ? ' warn' : ''}` },
-              titleIssue || '会成为工作目录下的文件夹名')),
+              titleIssue || t('会成为工作目录下的文件夹名', "Becomes a folder name inside the working directory."))),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '工作目录'),
+            h('span', { className: 'dsn-label' }, t('工作目录', "Working directory")),
             h('div', { className: 'dsn-path' },
               h('input', {
                 className: 'dsn-input dsn-readonly',
                 value: cwd,
                 readOnly: true,
-                title: cwd || '只能通过右侧「选择」挑选目录',
-                placeholder: '点右侧「选择」挑一个目录',
+                title: cwd || t('只能通过右侧「选择」挑选目录', "Choose it with \"Select\" on the right."),
+                placeholder: t('点右侧「选择」挑一个目录', "Pick a directory with \"Select\" on the right."),
               }),
-              h('button', { className: 'dsn-btn ghost', type: 'button', onClick: pickDirectory }, '选择'))),
+              h('button', { className: 'dsn-btn ghost', type: 'button', onClick: pickDirectory }, t('选择', "Select")))),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '模型'),
+            h('span', { className: 'dsn-label' }, t('模型', "Model")),
             h('select', {
               className: 'dsn-select',
               value: provider,
               onChange: (event) => setProvider(event.target.value),
             }, groups.length === 0
-              ? h('option', { value: '' }, '未发现可用模型')
+              ? h('option', { value: '' }, t('未发现可用模型', "No model available"))
               : groups.map((group) => h('option', { key: group.id, value: group.id }, group.name)))),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '模型实例'),
+            h('span', { className: 'dsn-label' }, t('模型实例', "Model")),
             h('select', {
               className: 'dsn-select',
               value: model,
@@ -528,13 +538,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               ? h('option', { value: '' }, '—')
               : models.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name)))),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '预设'),
+            h('span', { className: 'dsn-label' }, t('预设', "Preset")),
             h('select', {
               className: 'dsn-select',
               value: preset,
               onChange: (event) => setPreset(event.target.value),
             },
-            h('option', { value: '' }, '默认预设'),
+            h('option', { value: '' }, t('默认预设', "Default preset")),
             boot.presets.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name)))),
           h('div', { className: 'dsn-field' },
             h('span', { className: 'dsn-label' }, ' '),
@@ -544,13 +554,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               disabled: busy || Boolean(titleIssue),
               title: titleIssue || '',
               onClick: create,
-            }, busy ? '创建中…' : '创建作品并开会话'))),
+            }, busy ? t('创建中…', "Creating…") : t('创建作品并开会话', "Create work and open its session")))),
 
         error ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error) : null,
 
         h('div', { className: 'dsn-list' },
           boot.projects.length === 0
-            ? h('div', { className: 'dsn-empty' }, '还没有作品。填好名称、工作目录和模型后创建一部，界面会自动为它开一个会话。')
+            ? h('div', { className: 'dsn-empty' }, t('还没有作品。填好名称、工作目录和模型后创建一部，界面会自动为它开一个会话。', "No works yet. Fill in a title, a working directory and a model; creating one also opens its own session."))
             : boot.projects.map((project) => h('div', {
               key: project.projectId,
               className: 'dsn-row',
@@ -559,18 +569,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('div', { className: 'dsn-row-main', style: { flex: 1 } },
               h('div', { className: 'dsn-row-name' }, project.title),
               h('div', { className: 'dsn-row-meta' },
-                `${project.chapterCount} 章 · ${project.snapshotCount} 个快照 · 模型：${modelLabel(boot.models, project.model)}`),
+                t('{chapters} 章 · {snapshots} 个快照 · 模型：{model}', '{chapters} chapters · {snapshots} snapshots · model: {model}', { chapters: project.chapterCount, snapshots: project.snapshotCount, model: modelLabel(boot.models, project.model) })),
               h('div', { className: 'dsn-row-meta' },
-                `${project.cwd} · 更新于 ${formatTime(project.updatedAt)}${project.lastChapterTitle ? ` · 最近：${project.lastChapterTitle}` : ''}`)),
+                t('{cwd} · 更新于 {time}{recent}', '{cwd} · updated {time}{recent}', { cwd: project.cwd, time: formatTime(project.updatedAt), recent: project.lastChapterTitle ? t(' · 最近：{title}', ' · latest: {title}', { title: project.lastChapterTitle }) : '' }))),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
-              title: '修改这部作品使用的模型',
+              title: t('修改这部作品使用的模型', "Change the model this work uses"),
               onClick: (event) => {
                 event.stopPropagation();
                 onEditModel(project);
               },
-            }, '模型'),
+            }, t('模型', "Model")),
             h('button', {
               className: 'dsn-btn danger ghost',
               type: 'button',
@@ -578,7 +588,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 event.stopPropagation();
                 remove(project);
               },
-            }, '删除')))));
+            }, t('删除', "Delete"))))));
     }
 
     /* -------------------------------------------------------------- timeline */
@@ -609,21 +619,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       return h('div', { className: 'dsn-timeline' },
         h('div', { className: 'dsn-timeline-head' },
-          h('div', { className: 'dsn-date' }, `第 ${day} 天`),
+          h('div', { className: 'dsn-date' }, t('第 {n} 天', 'Day {n}', { n: day })),
           h('div', { className: 'dsn-sub' },
             max === 0
-              ? '还没有世界快照'
-              : `共 ${max} 天 · 每 ${unitDays} 天一份快照 · 已写入 ${snapshots.length} 份${nextDay <= max ? ` · 下一快照点 第 ${nextDay} 天` : ''}`),
+              ? t('还没有世界快照', "No world snapshot yet")
+              : t('共 {total} 天 · 每 {unit} 天一份快照 · 已写入 {count} 份{next}', '{total} days · one snapshot every {unit} days · {count} written{next}', { total: max, unit: unitDays, count: snapshots.length, next: nextDay <= max ? t(' · 下一快照点 第 {day} 天', ' · next snapshot point on day {day}', { day: nextDay }) : '' })),
           h('div', { className: 'dsn-spacer' }),
           h('div', { className: 'dsn-units' },
-            h('span', { className: 'dsn-label' }, '快照间隔'),
+            h('span', { className: 'dsn-label' }, t('快照间隔', "Snapshot interval")),
             h('input', {
               className: 'dsn-input dsn-unit-input',
               type: 'text',
               inputMode: 'numeric',
               list: 'dsn-unit-options',
               value: unitText,
-              title: '每多少天结算一份世界快照，可从 7 / 15 / 30 / 90 / 180 / 365 里选，也可以直接输入',
+              title: t('每多少天结算一份世界快照，可从 7 / 15 / 30 / 90 / 180 / 365 里选，也可以直接输入', "How many days per world snapshot — pick 7 / 15 / 30 / 90 / 180 / 365 or type another number."),
               onChange: (event) => {
                 // Typing only edits the text: committing per keystroke would
                 // persist the intermediate values ("1", "18") as the setting.
@@ -654,7 +664,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 }
               },
             }),
-            h('span', { className: 'dsn-label' }, '天'),
+            h('span', { className: 'dsn-label' }, t('天', "days")),
             h('datalist', { id: 'dsn-unit-options' },
               UNIT_CHOICES.map((unit) => h('option', { key: unit, value: String(unit) }))))),
         h('div', { className: 'dsn-trackwrap' },
@@ -674,20 +684,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 key: `snap-${mark}`,
                 className: 'dsn-mark',
                 style: { left: `${(mark / max) * 100}%` },
-                title: `快照 · 第 ${mark} 天`,
+                title: t('快照 · 第 {day} 天', 'Snapshot · day {day}', { day: mark }),
               })),
               nextDay > latest && nextDay <= max
                 ? h('span', {
                   key: 'next',
                   className: 'dsn-mark next',
                   style: { left: `${(nextDay / max) * 100}%` },
-                  title: `下一个快照点 · 第 ${nextDay} 天`,
+                  title: t('下一个快照点 · 第 {day} 天', 'Next snapshot point · day {day}', { day: nextDay }),
                 })
                 : null)
             : null),
-        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, tick === max ? `${tick} 天` : String(tick)))),
+        h('div', { className: 'dsn-ticks' }, ticks.map((tick) => h('span', { key: tick }, tick === max ? t('{n} 天', '{n} days', { n: tick }) : String(tick)))),
         max === 0
-          ? h('div', { className: 'dsn-hint' }, `生成章节后，故事时间每走过 ${unitDays} 天就会写入第一份世界快照，时间线随之生长。`)
+          ? h('div', { className: 'dsn-hint' }, t('生成章节后，故事时间每走过 {unit} 天就会写入第一份世界快照，时间线随之生长。', 'Once you generate a chapter, a first world snapshot is written every {unit} days of story time and the timeline grows with it.', { unit: unitDays }))
           : null);
     }
 
@@ -744,9 +754,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const askSnapshot = useCallback(() => {
         requestConfirm({
-          title: '是否为当前时间生成世界快照？',
-          text: `将为第 ${day} 天生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。`,
-          confirmLabel: '生成快照',
+          title: t('是否为当前时间生成世界快照？', "Generate a world snapshot for this point in time?"),
+          text: t('将为第 {day} 天生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。', 'A world snapshot will be generated for day {day} from the previous snapshot and the synopses of this stretch; the timeline extends to that day.', { day }),
+          confirmLabel: t('生成快照', "Generate snapshot"),
           action: () => onRefreshSnapshot(day),
         });
       }, [requestConfirm, day, detail, onRefreshSnapshot]);
@@ -761,48 +771,48 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             type: 'button',
             'aria-pressed': showChart,
             onClick: () => setShowChart((value) => !value),
-          }, showChart ? '隐藏统计图' : '显示统计图'),
+          }, showChart ? t('隐藏统计图', "Hide chart") : t('显示统计图', "Show chart")),
           canSnapshot
             ? h('button', {
               className: 'dsn-btn',
               type: 'button',
               disabled: snapshotBusy,
               onClick: askSnapshot,
-            }, snapshotBusy ? '生成中…' : `生成世界快照 · 第 ${day} 天`)
+            }, snapshotBusy ? t('生成中…', "Generating…") : t('生成世界快照 · 第 {day} 天', 'Generate snapshot · day {day}', { day }))
             : null,
           h('button', { className: 'dsn-btn primary', type: 'button', onClick: () => onEnterStory(day) },
-            nearest ? `进入故事 · 第 ${nearest.index + 1} 章` : '进入故事')),
+            nearest ? t('进入故事 · 第 {n} 章', 'Enter story · chapter {n}', { n: nearest.index + 1 }) : t('进入故事', "Enter story"))),
         h(Timeline, { detail, unitDays, day, onChange: change }),
         h('div', { className: 'dsn-grid' },
           h('div', { className: 'dsn-card', style: { gridColumn: 'span 2' } },
-            h('h4', null, '世界观'),
+            h('h4', null, t('世界观', "World")),
             snapshot && snapshot.world
               ? h('div', { className: 'dsn-text' }, snapshot.world)
-              : h('div', { className: 'dsn-muted' }, '还没有落在这一时间点的世界快照。')),
+              : h('div', { className: 'dsn-muted' }, t('还没有落在这一时间点的世界快照。', "No world snapshot covers this point in time yet."))),
           h('div', { className: 'dsn-card' },
-            h('h4', null, '角色列表'),
+            h('h4', null, t('角色列表', "Characters")),
             snapshot && snapshot.characters.length
               ? h('div', { className: 'dsn-entries' }, snapshot.characters.map((character, index) => h('div', {
                 key: `${character.name}-${index}`,
                 className: 'dsn-entry',
               }, h('b', null, character.name), h('span', null, character.desc))))
-              : h('div', { className: 'dsn-muted' }, '暂无')),
+              : h('div', { className: 'dsn-muted' }, t('暂无', "None yet"))),
           h('div', { className: 'dsn-card' },
-            h('h4', null, '势力列表'),
+            h('h4', null, t('势力列表', "Factions")),
             snapshot && snapshot.factions.length
               ? h('div', { className: 'dsn-entries' }, snapshot.factions.map((faction, index) => h('div', {
                 key: `${faction.name}-${index}`,
                 className: 'dsn-entry',
               }, h('b', null, faction.name), h('span', null, faction.desc))))
-              : h('div', { className: 'dsn-muted' }, '暂无')),
+              : h('div', { className: 'dsn-muted' }, t('暂无', "None yet"))),
           h('div', { className: 'dsn-card' },
-            h('h4', null, '关系'),
+            h('h4', null, t('关系', "Relations")),
             snapshot && snapshot.relations.length
               ? h('div', { className: 'dsn-entries' }, snapshot.relations.map((relation, index) => h('div', {
                 key: index,
                 className: 'dsn-entry',
               }, h('span', null, relation))))
-              : h('div', { className: 'dsn-muted' }, '暂无'))),
+              : h('div', { className: 'dsn-muted' }, t('暂无', "None yet")))),
         showChart ? h(ChapterChart, { detail }) : null);
     }
 
@@ -818,7 +828,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       if (chapters.length === 0) {
         return h('div', { className: 'dsn-chart-wrap' },
-          h('div', { className: 'dsn-hint' }, '章节天数统计：还没有章节，生成第一章后这里会画出每章的天数。'));
+          h('div', { className: 'dsn-hint' }, t('章节天数统计：还没有章节，生成第一章后这里会画出每章的天数。', "Chapter length chart: no chapters yet. Generate the first one and each chapter's day count appears here.")));
       }
 
       const width = 1000;
@@ -848,9 +858,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       return h('div', { className: 'dsn-chart-wrap' },
         h('div', { className: 'dsn-chart-head' },
-          h('span', { className: 'dsn-label' }, '每章天数'),
+          h('span', { className: 'dsn-label' }, t('每章天数', "Days per chapter")),
           h('span', { className: 'dsn-hint' },
-            `纵轴：本章天数 · 横轴：第几章 · 共 ${chapters.length} 章`)),
+            t('纵轴：本章天数 · 横轴：第几章 · 共 {count} 章', 'Y: days in the chapter · X: chapter · {count} in total', { count: chapters.length }))),
         h('svg', { className: 'dsn-chart', viewBox: `0 0 ${width} ${height}`, role: 'img' },
           yTicks.map((tick) => h('g', { key: `y-${tick}` },
             h('line', {
@@ -865,7 +875,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               x: pad.left - 8,
               y: yFor(tick) + 3,
               textAnchor: 'end',
-            }, `${tick} 天`))),
+            }, t('{n} 天', '{n} days', { n: tick })))),
           weeks.map((entry, index) => h('line', {
             key: `bar-${chapters[index].chapterId}`,
             className: 'span',
@@ -886,7 +896,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               r: 3.5,
             },
             h('title', null,
-              `第 ${index + 1} 章 ${chapters[index].title || ''} · 本章 ${entry.days} 天（第 ${entry.start} → ${entry.end} 天）`)),
+              t('第 {n} 章 {title} · 本章 {days} 天（第 {start} → {end} 天）', 'Chapter {n} {title} · {days} days (day {start} → {end})', { n: index + 1, title: chapters[index].title || '', days: entry.days, start: entry.start, end: entry.end }))),
             index % labelStride === 0 || index === chapters.length - 1
               ? h('text', {
                 className: 'axis',
@@ -910,44 +920,44 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       return h(React.Fragment, null,
         h('div', { className: 'dsn-pagehead' },
-          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 时间长河'),
-          h('div', { className: 'dsn-title' }, chapter ? `第 ${chapter.index + 1} 章 · ${chapter.title || '未命名'}` : '章节故事'),
-          h('div', { className: 'dsn-sub' }, window ? `第 ${window.start} → ${window.end} 天` : ''),
+          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, t('← 时间长河', "← Timeline")),
+          h('div', { className: 'dsn-title' }, chapter ? t('第 {n} 章 · {title}', 'Chapter {n} · {title}', { n: chapter.index + 1, title: chapter.title || t('未命名', 'Untitled') }) : t('章节故事', "Chapter")),
+          h('div', { className: 'dsn-sub' }, window ? t('第 {start} → {end} 天', 'Day {start} → {end}', { start: window.start, end: window.end }) : ''),
           h('div', { className: 'dsn-spacer' }),
           previous
             ? h('button', {
               className: 'dsn-btn',
               type: 'button',
-              title: `第 ${previous.index + 1} 章 · ${previous.title || '未命名'}`,
+              title: t('第 {n} 章 · {title}', 'Chapter {n} · {title}', { n: previous.index + 1, title: previous.title || t('未命名', 'Untitled') }),
               onClick: () => onOpenChapter(previous.chapterId),
-            }, '← 上一章')
+            }, t('← 上一章', "← Previous"))
             : null,
           next
             ? h('button', {
               className: 'dsn-btn',
               type: 'button',
-              title: `第 ${next.index + 1} 章 · ${next.title || '未命名'}`,
+              title: t('第 {n} 章 · {title}', 'Chapter {n} · {title}', { n: next.index + 1, title: next.title || t('未命名', 'Untitled') }),
               onClick: () => onOpenChapter(next.chapterId),
-            }, '下一章 →')
-            : h('button', { className: 'dsn-btn primary', type: 'button', onClick: onNewChapter }, '＋ 新建章节'),
-          h('button', { className: 'dsn-btn ghost', type: 'button', disabled: !chapter, onClick: onOutline }, '章节大纲 →')),
+            }, t('下一章 →', "Next →"))
+            : h('button', { className: 'dsn-btn primary', type: 'button', onClick: onNewChapter }, t('＋ 新建章节', "+ New chapter")),
+          h('button', { className: 'dsn-btn ghost', type: 'button', disabled: !chapter, onClick: onOutline }, t('章节大纲 →', "Outline →"))),
         !chapter
-          ? h('div', { className: 'dsn-empty' }, '还没有章节。点右上角「＋ 新建章节」开始第一章。')
+          ? h('div', { className: 'dsn-empty' }, t('还没有章节。点右上角「＋ 新建章节」开始第一章。', "No chapters yet. Use \"+ New chapter\" at the top right to start the first one."))
           : h(React.Fragment, null,
             h('div', { className: 'dsn-editor' },
-              !chapter.outline ? h('div', { className: 'dsn-note' }, '这一章还没有保存过章节大纲，可以先回章节大纲里填写并生成。') : null,
+              !chapter.outline ? h('div', { className: 'dsn-note' }, t('这一章还没有保存过章节大纲，可以先回章节大纲里填写并生成。', "This chapter has no saved outline yet; fill one in under \"Outline\" and generate from there.")) : null,
               h('textarea', {
                 className: 'dsn-textarea dsn-story',
                 value: text,
-                placeholder: '章节正文：生成后可以直接在这里修改，改完点保存。',
+                placeholder: t('章节正文：生成后可以直接在这里修改，改完点保存。', "Chapter text: edit it here after generation, then save."),
                 onChange: (event) => onEdit(event.target.value),
               })),
             h('div', { className: 'dsn-foot' },
               h('div', { className: 'dsn-muted' },
-                `${words} 字${chapter.outline ? ` · 大纲要求 ${chapter.outline.minWords}–${chapter.outline.maxWords} 字` : ''}`),
+                t('{words} 字{req}', '{words} words{req}', { words, req: chapter.outline ? t(' · 大纲要求 {min}–{max} 字', ' · outline asks for {min}–{max} words', { min: chapter.outline.minWords, max: chapter.outline.maxWords }) : '' })),
               h('div', { className: 'dsn-spacer' }),
               h('button', { className: 'dsn-btn primary', type: 'button', disabled: saving, onClick: onSave },
-                saving ? '保存中…' : '保存'))));
+                saving ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
     /* ---------------------------------------------------------- outline page */
@@ -990,7 +1000,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const submit = useCallback(async (silent) => {
         if (!complete) {
-          notify('梗概还没有达到最低字数，或字数与时间长度没填完', 'error');
+          notify(t('梗概还没有达到最低字数，或字数与时间长度没填完', "The synopsis is below its minimum length, or the word bounds and the duration are incomplete."), 'error');
           return false;
         }
         setSaving(true);
@@ -1009,7 +1019,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           });
           setSavedAt(Date.now());
           setDirty(false);
-          if (silent !== true) notify('章节大纲已保存', 'success');
+          if (silent !== true) notify(t('章节大纲已保存', "Outline saved"), 'success');
           await onSaved(result.chapter.chapterId);
           return true;
         } catch (error) {
@@ -1059,13 +1069,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       /** 自动推演: deduce synopsis, title and the whole chapter, then save. */
       const deduce = useCallback(() => {
         if (isFirstChapter) {
-          notify('第一章没有世界快照和上一章可依据，自动推演不可用', 'error');
+          notify(t('第一章没有世界快照和上一章可依据，自动推演不可用', "Auto-deduction is unavailable for the first chapter: there is no snapshot or previous chapter to build on."), 'error');
           return;
         }
         requestConfirm({
-          title: '自动推演会覆盖现有内容',
-          text: '将重新生成故事梗概、章节名称和整章正文，当前的大纲与已写的正文都会被打断覆盖，生成完直接保存。确定继续吗？',
-          confirmLabel: '覆盖并生成',
+          title: t('自动推演会覆盖现有内容', "Auto-deduction overwrites everything"),
+          text: t('将重新生成故事梗概、章节名称和整章正文，当前的大纲与已写的正文都会被打断覆盖，生成完直接保存。确定继续吗？', "It regenerates the synopsis, the chapter name and the whole text, replacing the current outline and any written text, then saves. Continue?"),
+          confirmLabel: t('覆盖并生成', "Overwrite and generate"),
           action: async () => {
             try {
               const started = await api('/compose', {
@@ -1086,9 +1096,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       /** 生成章节故事: rewrite the body from the saved synopsis. */
       const generate = useCallback(() => {
         requestConfirm({
-          title: '以当前故事梗概生成章节故事？',
-          text: '会用已保存的梗概、字数限制和时间长度重写这一章的正文，现有正文会被覆盖。',
-          confirmLabel: '开始生成',
+          title: t('以当前故事梗概生成章节故事？', "Generate the chapter from the current synopsis?"),
+          text: t('会用已保存的梗概、字数限制和时间长度重写这一章的正文，现有正文会被覆盖。', "It rewrites this chapter from the saved synopsis, word bounds and duration, replacing the current text."),
+          confirmLabel: t('开始生成', "Generate"),
           action: () => startJob('/generate'),
         });
       }, [requestConfirm, startJob]);
@@ -1096,7 +1106,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       useEffect(() => {
         if (!job) return;
         if (job.kind === 'generate' && job.state === 'done') {
-          notify('章节生成成功', 'success');
+          notify(t('章节生成成功', "Chapter generated"), 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
         if (job.kind === 'compose' && job.state === 'done') {
@@ -1108,40 +1118,40 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           }));
           setSavedAt(Date.now());
           setDirty(false);
-          notify('已重新推演并保存章节', 'success');
+          notify(t('已重新推演并保存章节', "Re-deduced and saved the chapter"), 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
         if (job.state === 'error') {
-          notify(job.error || '任务失败', 'error');
+          notify(job.error || t('任务失败', "Task failed"), 'error');
         }
       }, [job ? job.jobId : null, job ? job.state : null]);
 
       return h(React.Fragment, null,
         h('div', { className: 'dsn-pagehead' },
-          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, '← 章节故事'),
-          h('div', { className: 'dsn-title' }, chapter ? `章节大纲 · 第 ${chapter.index + 1} 章` : '章节大纲 · 新章节'),
-          h('div', { className: 'dsn-sub' }, `起始 第 ${chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0)} 天`),
+          h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onBack }, t('← 章节故事', "← Chapter")),
+          h('div', { className: 'dsn-title' }, chapter ? t('章节大纲 · 第 {n} 章', 'Outline · chapter {n}', { n: chapter.index + 1 }) : t('章节大纲 · 新章节', "Outline · new chapter")),
+          h('div', { className: 'dsn-sub' }, t('起始 第 {day} 天', 'Starts day {day}', { day: chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0) })),
           h('div', { className: 'dsn-spacer' }),
           h('button', {
             className: 'dsn-btn ghost',
             type: 'button',
             disabled: !complete || isFirstChapter || saving || Boolean(generating || composing),
             title: isFirstChapter
-              ? '第一章没有世界快照和上一章可依据，自动推演不可用；请自己写梗概后生成'
-              : '按当前字数与时间长度，重新推演梗概、章节名称与整章正文',
+              ? t('第一章没有世界快照和上一章可依据，自动推演不可用；请自己写梗概后生成', "No snapshot or previous chapter for the first chapter; write its synopsis yourself and generate.")
+              : t('按当前字数与时间长度，重新推演梗概、章节名称与整章正文', "Re-deduce the synopsis, the chapter name and the whole text from the current bounds and duration."),
             onClick: deduce,
-          }, composing ? '推演中…' : '自动推演')),
+          }, composing ? t('推演中…', "Deducing…") : t('自动推演', "Auto-deduce"))),
         h('div', { className: 'dsn-form' },
           h('label', { className: 'dsn-field span2' },
-            h('span', { className: 'dsn-label' }, '章节标题'),
+            h('span', { className: 'dsn-label' }, t('章节标题', "Chapter title")),
             h('input', {
               className: 'dsn-input',
               value: form.title,
-              placeholder: '例如：雨夜来客',
+              placeholder: t('例如：雨夜来客', "e.g. A Visitor in the Rain"),
               onChange: (event) => patch('title', event.target.value),
             })),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '故事时间长度（天）'),
+            h('span', { className: 'dsn-label' }, t('故事时间长度（天）', "Story duration (days)")),
             h('input', {
               className: 'dsn-input',
               type: 'number',
@@ -1150,7 +1160,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onChange: (event) => patch('durationDays', Number(event.target.value)),
             })),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '章节最低字数'),
+            h('span', { className: 'dsn-label' }, t('章节最低字数', "Minimum words")),
             h('input', {
               className: 'dsn-input',
               type: 'number',
@@ -1159,7 +1169,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onChange: (event) => patch('minWords', Number(event.target.value)),
             })),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '章节最多字数'),
+            h('span', { className: 'dsn-label' }, t('章节最多字数', "Maximum words")),
             h('input', {
               className: 'dsn-input',
               type: 'number',
@@ -1168,7 +1178,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onChange: (event) => patch('maxWords', Number(event.target.value)),
             })),
           h('label', { className: 'dsn-field' },
-            h('span', { className: 'dsn-label' }, '梗概最低字数'),
+            h('span', { className: 'dsn-label' }, t('梗概最低字数', "Minimum synopsis length")),
             h('input', {
               className: 'dsn-input',
               type: 'number',
@@ -1177,29 +1187,29 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onChange: (event) => patch('synopsisMinChars', Number(event.target.value)),
             })),
           h('label', { className: 'dsn-field span4' },
-            h('span', { className: 'dsn-label' }, `故事梗概（已写 ${synopsisLength} / 至少 ${form.synopsisMinChars} 字）`),
+            h('span', { className: 'dsn-label' }, t('故事梗概（已写 {written} / 至少 {min} 字）', 'Synopsis ({written} / at least {min} characters)', { written: synopsisLength, min: form.synopsisMinChars })),
             h('textarea', {
               className: 'dsn-textarea dsn-synopsis',
               value: form.synopsis,
-              placeholder: '这一章要发生什么：起因、经过、转折、结果。',
+              placeholder: t('这一章要发生什么：起因、经过、转折、结果。', "What happens in this chapter: setup, events, the turn, the outcome."),
               onChange: (event) => patch('synopsis', event.target.value),
             }))),
         h('div', { className: 'dsn-foot' },
           h('div', { className: `dsn-hint${complete ? '' : ' warn'}` },
-            complete ? (savedAt ? '设定完整，可以生成章节故事' : '设定完整，可以保存') : '梗概达到最低字数并填完其他项后可以保存'),
+            complete ? (savedAt ? t('设定完整，可以生成章节故事', "Settings complete — you can generate the chapter.") : t('设定完整，可以保存', "Settings complete — you can save.")) : t('梗概达到最低字数并填完其他项后可以保存', "Reach the synopsis minimum and fill in the rest to save.")),
           generating || composing
             ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }),
-              composing ? (job.message || '正在自动推演…') : '正在生成章节故事…')
+              composing ? (job.message || t('正在自动推演…', "Deducing…")) : t('正在生成章节故事…', "Generating the chapter…"))
             : null,
           h('div', { className: 'dsn-spacer' }),
           h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving || Boolean(generating || composing), onClick: () => submit(false) },
-            saving ? '保存中…' : '保存'),
+            saving ? t('保存中…', "Saving…") : t('保存', "Save")),
           h('button', {
             className: 'dsn-btn primary',
             type: 'button',
             disabled: !savedAt || Boolean(generating || composing) || !chapter,
             onClick: generate,
-          }, generating ? '生成中…' : '生成章节故事')));
+          }, generating ? t('生成中…', "Generating…") : t('生成章节故事', "Generate chapter"))));
     }
 
     /* --------------------------------------------------------- new chapter */
@@ -1260,7 +1270,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const compose = useCallback(async () => {
         if (isFirstChapter) {
-          setError('第一章没有可依据的世界快照和上一章，自动推演不可用');
+          setError(t('第一章没有可依据的世界快照和上一章，自动推演不可用', "No world snapshot or previous chapter to build on for the first chapter; auto-deduction is unavailable."));
           return;
         }
         setError('');
@@ -1283,36 +1293,36 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         if (!job) return;
         if (job.state === 'running') return;
         if (job.state === 'done' && job.kind === 'compose') {
-          notify('章节已生成', 'success');
+          notify(t('章节已生成', "Chapter generated"), 'success');
           onCreated(job.result && job.result.chapterId);
           return;
         }
-        if (job.state === 'error') setError(job.error || '自动推演失败');
+        if (job.state === 'error') setError(job.error || t('自动推演失败', "Auto-deduction failed"));
       }, [job ? job.jobId : null, job ? job.state : null]);
 
       return h('div', { className: 'dsn-dialog-backdrop' },
         h('div', { className: 'dsn-dialog' },
           h('div', { className: 'dsn-dialog-head' },
-            h('div', { className: 'dsn-title' }, '新建章节'),
-            h('div', { className: 'dsn-sub' }, `起始 第 ${startDay} 天`),
+            h('div', { className: 'dsn-title' }, t('新建章节', "New chapter")),
+            h('div', { className: 'dsn-sub' }, t('起始 第 {day} 天', 'Starts day {day}', { day: startDay })),
             h('div', { className: 'dsn-spacer' }),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
               disabled: composing || busy,
               onClick: onCancel,
-            }, '取消')),
+            }, t('取消', "Cancel"))),
           h('div', { className: 'dsn-dialog-body' },
             h('label', { className: 'dsn-field span2' },
-              h('span', { className: 'dsn-label' }, '章节名称（可留空，自动推演会补上）'),
+              h('span', { className: 'dsn-label' }, t('章节名称（可留空，自动推演会补上）', "Chapter name (optional; auto-deduction fills it)")),
               h('input', {
                 className: 'dsn-input',
                 value: form.title,
-                placeholder: '例如：雨夜来客',
+                placeholder: t('例如：雨夜来客', "e.g. A Visitor in the Rain"),
                 onChange: (event) => patch('title', event.target.value),
               })),
             h('label', { className: 'dsn-field' },
-              h('span', { className: 'dsn-label' }, '章节最低字数 *'),
+              h('span', { className: 'dsn-label' }, t('章节最低字数 *', "Minimum words *")),
               h('input', {
                 className: 'dsn-input',
                 type: 'number',
@@ -1321,7 +1331,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onChange: (event) => patch('minWords', Number(event.target.value)),
               })),
             h('label', { className: 'dsn-field' },
-              h('span', { className: 'dsn-label' }, '章节最多字数 *'),
+              h('span', { className: 'dsn-label' }, t('章节最多字数 *', "Maximum words *")),
               h('input', {
                 className: 'dsn-input',
                 type: 'number',
@@ -1330,7 +1340,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onChange: (event) => patch('maxWords', Number(event.target.value)),
               })),
             h('label', { className: 'dsn-field span2' },
-              h('span', { className: 'dsn-label' }, '故事时间长度（天）*'),
+              h('span', { className: 'dsn-label' }, t('故事时间长度（天）*', "Story duration (days) *")),
               h('input', {
                 className: 'dsn-input',
                 type: 'number',
@@ -1340,24 +1350,24 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               })),
             error ? h('div', { className: 'dsn-hint warn span2' }, error) : null,
             isFirstChapter
-              ? h('div', { className: 'dsn-hint span2' }, '这是作品的第一章：没有世界快照和上一章可依据，自动推演不可用。先创建空章节，再自己写梗概生成。')
+              ? h('div', { className: 'dsn-hint span2' }, t('这是作品的第一章：没有世界快照和上一章可依据，自动推演不可用。先创建空章节，再自己写梗概生成。', "This is the work's first chapter: there is no snapshot or previous chapter, so auto-deduction is unavailable. Create an empty chapter, write its synopsis, then generate."))
               : null),
           h('div', { className: 'dsn-dialog-foot' },
-            composing ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), job.message || '正在自动推演…') : null,
+            composing ? h('div', { className: 'dsn-progress' }, h('span', { className: 'dsn-spin' }), job.message || t('正在自动推演…', "Deducing…")) : null,
             h('div', { className: 'dsn-spacer' }),
             h('button', {
               className: 'dsn-btn',
               type: 'button',
               disabled: !complete || busy || composing,
               onClick: create,
-            }, busy ? '创建中…' : '创建空章节'),
+            }, busy ? t('创建中…', "Creating…") : t('创建空章节', "Create empty chapter")),
             h('button', {
               className: 'dsn-btn primary',
               type: 'button',
               disabled: !complete || busy || composing || isFirstChapter,
-              title: isFirstChapter ? '第一章没有可依据的快照与上一章，自动推演不可用' : '',
+              title: isFirstChapter ? t('第一章没有可依据的快照与上一章，自动推演不可用', "No snapshot or previous chapter to build on; auto-deduction is unavailable.") : '',
               onClick: compose,
-            }, composing ? '自动推演中…' : '自动推演'))));
+            }, composing ? t('自动推演中…', "Deducing…") : t('自动推演', "Auto-deduce")))));
     }
 
     /** A plain yes/no dialog for an action that overwrites something. */
@@ -1370,9 +1380,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-dialog-body', style: { gridTemplateColumns: '1fr' } },
             h('div', { className: 'dsn-text', style: { fontSize: 12 } }, text)),
           h('div', { className: 'dsn-dialog-foot' },
-            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, cancelLabel || '取消'),
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, cancelLabel || t('取消', "Cancel")),
             h('div', { className: 'dsn-spacer' }),
-            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onConfirm }, confirmLabel || '确定'))));
+            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onConfirm }, confirmLabel || t('确定', "OK")))));
     }
 
     /* --------------------------------------------------------- leave confirm */
@@ -1382,16 +1392,16 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       return h('div', { className: 'dsn-dialog-backdrop' },
         h('div', { className: 'dsn-dialog', style: { width: 'min(420px, calc(100% - 48px))' } },
           h('div', { className: 'dsn-dialog-head' },
-            h('div', { className: 'dsn-title' }, `${what || '这一章'}还没有保存`),
+            h('div', { className: 'dsn-title' }, t('{what}还没有保存', '{what} has unsaved changes', { what: what || t('这一章', 'This chapter') })),
             h('div', { className: 'dsn-spacer' })),
           h('div', { className: 'dsn-dialog-body', style: { gridTemplateColumns: '1fr' } },
             h('div', { className: 'dsn-text', style: { fontSize: 12 } },
-              '离开这个界面会丢掉刚才的修改。要先保存吗？')),
+              t('离开这个界面会丢掉刚才的修改。要先保存吗？', "Leaving this screen discards your edits. Save first?"))),
           h('div', { className: 'dsn-dialog-foot' },
-            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, '取消'),
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, t('取消', "Cancel")),
             h('div', { className: 'dsn-spacer' }),
-            h('button', { className: 'dsn-btn', type: 'button', onClick: onDiscard }, '不保存离开'),
-            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onSave }, '保存并离开'))));
+            h('button', { className: 'dsn-btn', type: 'button', onClick: onDiscard }, t('不保存离开', "Leave without saving")),
+            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onSave }, t('保存并离开', "Save and leave")))));
     }
 
     /* ------------------------------------------------------------- workspace */
@@ -1437,7 +1447,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         try {
           await api('/chapter/save', { projectId: detail.projectId, chapterId: chapter.chapterId, content: text });
           setDirty(false);
-          if (silent !== true) notify('章节已保存', 'success');
+          if (silent !== true) notify(t('章节已保存', "Chapter saved"), 'success');
           await onReload();
           return true;
         } catch (error) {
@@ -1521,7 +1531,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         setSnapshotBusy(true);
         try {
           const started = await api('/snapshot/refresh', { projectId: detail.projectId, day });
-          notify('正在结算世界快照…', 'success');
+          notify(t('正在结算世界快照…', "Settling the world snapshot…"), 'success');
           const timer = setInterval(async () => {
             try {
               const job = await api(`/job?id=${encodeURIComponent(started.jobId)}`);
@@ -1529,10 +1539,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               clearInterval(timer);
               setSnapshotBusy(false);
               if (job.state === 'done') {
-                notify('世界快照已更新，时间线向前延伸', 'success');
+                notify(t('世界快照已更新，时间线向前延伸', "World snapshot updated; the timeline moved forward."), 'success');
                 await onReload();
               } else {
-                notify(job.error || '世界快照更新失败', 'error');
+                notify(job.error || t('世界快照更新失败', "World snapshot update failed"), 'error');
               }
             } catch (error) {
               clearInterval(timer);
@@ -1606,7 +1616,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           : null,
         pendingLeave
           ? h(LeaveConfirm, {
-            what: pendingLeave.page === 'outline' ? '这份章节大纲' : '这一章的正文',
+            what: pendingLeave.page === 'outline' ? t('这份章节大纲', "This outline") : t('这一章的正文', "this chapter's text"),
             onCancel: () => setPendingLeave(null),
             onDiscard: () => {
               const { action, page } = pendingLeave;
@@ -1644,7 +1654,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     /* ------------------------------------------------------------ studio app */
 
     function StudioApp({ workspace }) {
-      const t = useTranslator();
+      // Subscribes every screen below to Settings → General → Language.
+      useLocaleId();
       const [boot, setBoot] = useState(null);
       const [error, setError] = useState('');
       const [projectId, setProjectId] = useState(null);
@@ -1736,7 +1747,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onEditModel: setModelTarget,
                 }))
               : detail === null
-                ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, '正在载入作品…')
+                ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
                 : h(ProjectWorkspace, {
                   key: detail.projectId,
                   detail,

@@ -82,3 +82,5 @@ README.md	|	2026-10-20 09:10	|	补安装说明
 package.json	|	2026-10-20 09:40	|	声明 peerDependencies: @deepseek-ai/dsh ^0.2.1-rc.2（optional）
 client.js	|	2026-10-20 09:40	|	接入 ctx.locale：useTranslator + 侧栏/标题栏跟随语言设置
 README.md	|	2026-10-20 09:40	|	补 dsh 版本要求、市场投稿条目、多语言现状
+client.js	|	2026-10-20 10:10	|	全量国际化：144 条文案改为 t(中,英)，跟随 设置→通用→语言；模板支持 {命名} 占位
+README.md	|	2026-10-20 10:10	|	多语言章节更新为已完成
