@@ -916,6 +916,15 @@ async function askAgent(ctx, root, project, prompt, onNote) {
     const before = project.sessionId;
     const { controller, agent } = await resolveAgent(ctx, root, project, attempt === 0 ? onNote : undefined);
     if (project.sessionId !== before) rebuilt = true;
+    // Only messages added by THIS prompt are eligible: reading further back
+    // would hand back the previous turn's reply (a snapshot JSON, for one) when
+    // the model stays silent.
+    let seen = 0;
+    try {
+      seen = agent.session.deriveMessages().length;
+    } catch {
+      seen = 0;
+    }
     const admission = new AbortController();
     await withTimeout(controller.prompt({
       sessionId: project.sessionId,
@@ -932,7 +941,7 @@ async function askAgent(ctx, root, project, prompt, onNote) {
       }
     });
     const messages = agent.session.deriveMessages();
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
+    for (let index = messages.length - 1; index >= seen; index -= 1) {
       const message = messages[index];
       if (!message || message.role !== 'assistant') continue;
       const text = textOfMessage(message);
@@ -946,6 +955,36 @@ async function askAgent(ctx, root, project, prompt, onNote) {
   throw rebuilt
     ? httpError(502, '作品的旧会话已不存在，已为它新建一个会话，但模型没有回复；请在侧栏打开这部作品的会话（「小说工坊」分组里）后再试一次')
     : httpError(502, '模型没有返回任何正文');
+}
+
+/** True when a reply is structured data rather than prose (a snapshot JSON). */
+function looksStructured(text) {
+  const head = String(text || '').trim();
+  if (head === '') return false;
+  if (!head.startsWith('{') && !head.startsWith('[')) {
+    return head.startsWith('```') && (head.includes('"world"') || head.includes('"characters"'));
+  }
+  try {
+    JSON.parse(head);
+    return true;
+  } catch {
+    return head.includes('"world"') || head.includes('"characters"') || head.includes('"synopsis"');
+  }
+}
+
+/**
+ * Ask for prose. A model that answers a writing prompt with JSON (it just
+ * produced a snapshot, say) gets one firm reminder instead of having structured
+ * text saved as the chapter body.
+ */
+async function askStory(ctx, root, project, prompt, onNote) {
+  const first = await askAgent(ctx, root, project, prompt, onNote);
+  if (!looksStructured(first)) return first;
+  if (onNote) onNote('模型返回了结构化数据，正在要求它改写为正文');
+  const retryPrompt = `${prompt}\n\n【纠正】上一轮你返回的是 JSON/结构化数据，那是错的。现在只输出这一章的小说正文（中文散文），不要 JSON、不要字段名、不要标题行。`;
+  const second = await askAgent(ctx, root, project, retryPrompt, onNote);
+  if (looksStructured(second)) throw httpError(502, '模型反复返回结构化数据而不是正文，请稍后重试或换一个模型');
+  return second;
 }
 
 function snapshotBlock(snapshot) {
@@ -1241,7 +1280,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.39',
+    revision: '2026-10-20.40',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1759,7 +1798,7 @@ async function startGenerate(ctx, root, registry, body) {
       .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay <= chapter.startDay)
       .sort((a, b) => b.startDay - a.startDay)[0] || null;
     job.message = '正在生成章节正文';
-    const content = await askAgent(ctx, root, project, chapterPrompt(project, chapter, previous), (note) => {
+    const content = await askStory(ctx, root, project, chapterPrompt(project, chapter, previous), (note) => {
       job.message = note;
     });
     const saved = await mutateProject(root, projectId, (draft) => {
@@ -1853,7 +1892,7 @@ async function startCompose(ctx, root, registry, body) {
       job.message = note;
     });
     const deduced = parseJsonReply(deduceReply) || {};
-    const synopsis = asText(firstOf(deduced, ['synopsis', '梗概', 'summary']));
+    const synopsis = asText(firstOf(deduced, ['synopsis', '梗概', '本章梗概']));
     if (synopsis === '') throw httpError(502, '模型没有给出章节梗概');
     const title = draft.title
       || asText(firstOf(deduced, ['title', '标题']))
@@ -1895,7 +1934,7 @@ async function startCompose(ctx, root, registry, body) {
     const fresh = await readProject(root, projectId);
     const target = fresh.chapters.find((entry) => entry.chapterId === chapterId);
     if (!target) throw httpError(500, '章节写入失败');
-    const content = await askAgent(ctx, root, fresh, chapterPrompt(fresh, target, previous), (note) => {
+    const content = await askStory(ctx, root, fresh, chapterPrompt(fresh, target, previous), (note) => {
       job.message = note;
     });
 
@@ -1950,7 +1989,7 @@ async function startDeduce(ctx, root, registry, body) {
     });
     const parsed = parseJsonReply(reply);
     if (!parsed) throw httpError(502, '模型没有返回可解析的大纲 JSON');
-    const synopsis = asText(firstOf(parsed, ['synopsis', '梗概', 'summary']));
+    const synopsis = asText(firstOf(parsed, ['synopsis', '梗概', '本章梗概']));
     const durationDays = Math.max(1, Math.round(Number(firstOf(parsed, ['durationDays', 'duration', '时间长度', 'days'])) || project.timeline.unitDays));
     const minWords = Math.max(1, Math.round(Number(firstOf(parsed, ['minWords', '最低字数'])) || 1200));
     const maxWords = Math.max(minWords + 1, Math.round(Number(firstOf(parsed, ['maxWords', '最多字数'])) || 3500));
