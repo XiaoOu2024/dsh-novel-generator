@@ -982,7 +982,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.14',
+    revision: '2026-10-20.15',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1005,8 +1005,9 @@ async function bootstrap(ctx, root) {
 async function createProject(ctx, root, body) {
   const controller = ctx.get('sessionController');
   if (controller === undefined) throw httpError(503, '当前部署缺少 sessionController 服务，无法创建会话');
-  const title = asText(body.title) || '未命名作品';
-  // The title becomes a folder name inside the chosen directory.
+  // The title is required and becomes a folder name inside the chosen
+  // directory, so an empty or illegal one is refused rather than defaulted.
+  const title = asText(body.title);
   const titleIssue = titleProblem(title);
   if (titleIssue !== null) throw httpError(400, titleIssue);
   const cwd = asText(body.cwd);

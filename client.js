@@ -437,9 +437,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState('');
 
-      // The title becomes a folder name inside the working directory.
-      const effectiveTitle = title.trim() === '' ? t('未命名作品', "Untitled work") : title;
-      const titleIssue = titleProblem(effectiveTitle);
+      // The title becomes a folder name inside the working directory, and it is
+      // required: an empty name is reported when the user tries to create.
+      const trimmedTitle = title.trim();
+      const titleIssue = trimmedTitle === '' ? '' : titleProblem(trimmedTitle);
 
       const groups = (boot.models && boot.models.groups) || [];
       const models = useMemo(() => {
@@ -469,6 +470,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const create = useCallback(async () => {
         setError('');
+        if (trimmedTitle === '') {
+          setError(t('作品名称不能为空', "Title cannot be empty."));
+          return;
+        }
+        if (titleIssue) {
+          setError(titleIssue);
+          return;
+        }
         if (!cwd.trim()) {
           setError(t('请先点「选择」挑一个工作目录', "Pick a working directory with \"Select\" first."));
           return;
@@ -476,7 +485,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         setBusy(true);
         try {
           const result = await api('/project/create', {
-            title: title.trim() || t('未命名作品', "Untitled work"),
+            title: trimmedTitle,
             cwd: cwd.trim(),
             agentPreset: preset || undefined,
             model: provider && model ? { provider, model } : null,
@@ -489,7 +498,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         } finally {
           setBusy(false);
         }
-      }, [title, cwd, preset, provider, model, onOpen, onReload]);
+      }, [trimmedTitle, titleIssue, cwd, preset, provider, model, onOpen, onReload]);
 
       const remove = useCallback(async (project) => {
         if (!window.confirm(t('确定删除作品「{title}」？这会同时删除工作目录下的作品文件夹（正文、梗概、世界快照）。作品的会话本身保留。', 'Delete the work “{title}”? This also deletes its folder in the working directory (chapters, outlines, world snapshots). The session itself stays.', { title: project.title }))) return;
@@ -555,14 +564,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('button', {
               className: 'dsn-btn primary',
               type: 'button',
-              disabled: busy || Boolean(titleIssue),
-              title: titleIssue || '',
+              // Enabled even when the form is incomplete: the click itself says why.
+              disabled: busy,
               onClick: create,
             }, busy ? t('创建中…', "Creating…") : t('创建作品并开会话', "Create work and open its session")))),
 
-        error || titleIssue
-          ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error || titleIssue)
-          : null,
+        error ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error) : null,
 
         h('div', { className: 'dsn-list' },
           boot.projects.length === 0

@@ -102,3 +102,6 @@ client.js	|	2026-10-20 11:30	|	槽位 id 同步为 dsh-novel-generator-*
 package.json	|	2026-10-20 11:30	|	0.1.1
 client.js	|	2026-10-20 12:05	|	uiWorkspace 改为点击时解析（修复目录选择器不可用）；作品名称去掉额外提示行，非法时边框提示+错误行
 package.json	|	2026-10-20 12:05	|	版本 0.1.2；dsh.client.inject 增加 dsh-client-ui-workspace
+index.js	|	2026-10-20 12:25	|	创建作品拒绝空名称（不再默认「未命名作品」）
+client.js	|	2026-10-20 12:25	|	作品名称必填：点创建时校验并给出原因，去掉默认名兜底
+package.json	|	2026-10-20 12:25	|	0.1.3
