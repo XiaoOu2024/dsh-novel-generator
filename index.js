@@ -891,6 +891,9 @@ async function rebindSession(ctx, root, project) {
     draft.sessionId = sessionId;
   });
   try {
+    // The memo skips projects already grouped; a rebind starts a new session
+    // that has never been grouped, so the entry has to go.
+    ensuredWorkspaces.delete(project.projectId);
     await ensureWorkspace(ctx, root, project);
   } catch {
     // Grouping is cosmetic; the session works either way.
@@ -1361,7 +1364,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.44',
+    revision: '2026-10-20.45',
     projects,
     models: {
       default: modelCatalog.default || null,

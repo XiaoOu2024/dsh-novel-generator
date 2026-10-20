@@ -1041,7 +1041,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ---------------------------------------------------------- outline page */
 
-    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm }) {
+    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -1182,6 +1182,22 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         });
       }, [requestConfirm, startJob]);
 
+      // Report the running job upward so the studio can lock itself and warn
+      // before the panel is closed mid-generation.
+      useEffect(() => {
+        if (typeof onBusyChange !== 'function') return;
+        const running = job && job.state === 'running';
+        if (!running) {
+          onBusyChange(null);
+          return undefined;
+        }
+        onBusyChange({
+          label: job.kind === 'compose' ? t('正在自动推演…', 'Deducing…') : t('正在生成章节故事…', 'Generating the chapter…'),
+          message: job.message || '',
+        });
+        return () => onBusyChange(null);
+      }, [job ? job.jobId : null, job ? job.state : null, job ? job.message : null, onBusyChange]);
+
       useEffect(() => {
         if (!job) return;
         if (job.kind === 'generate' && job.state === 'done') {
@@ -1312,7 +1328,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
      * The only place a chapter is created: word bounds and the story length are
      * required, and one button can deduce the synopsis and write the chapter.
      */
-    function NewChapterDialog({ detail, startDay, onCancel, onCreated, notify }) {
+    function NewChapterDialog({ detail, startDay, onCancel, onCreated, notify, onBusyChange }) {
       const [form, setForm] = useState({
         title: '',
         minWords: 1200,
@@ -1336,6 +1352,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, []);
 
       const composing = Boolean(job && job.state === 'running' && job.kind === 'compose');
+
+      // A deducing dialog locks the studio behind it and warns before closing.
+      useEffect(() => {
+        if (typeof onBusyChange !== 'function') return undefined;
+        if (!composing) {
+          onBusyChange(null);
+          return undefined;
+        }
+        onBusyChange({
+          label: t('正在自动推演新章节…', 'Deducing a new chapter…'),
+          message: (job && job.message) || '',
+        });
+        return () => onBusyChange(null);
+      }, [composing, job ? job.message : null, onBusyChange]);
 
       const create = useCallback(async () => {
         setBusy(true);
@@ -1500,13 +1530,25 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------- workspace */
 
-    function ProjectWorkspace({ detail, onReload, notify, onRegisterLeaveGuard }) {
+    function ProjectWorkspace({ detail, onReload, notify, onRegisterLeaveGuard, onBusyChange }) {
       const [view, setView] = useState('world');
       const [chapterId, setChapterId] = useState(null);
       // A running snapshot job: { label, message }. Non-null locks the studio,
       // because the job keeps rewriting this work's snapshots.
       const [snapshotJob, setSnapshotJob] = useState(null);
-      const snapshotBusy = snapshotJob !== null;
+      // The same idea for the chapter jobs (自动推演 / 生成章节故事), reported up
+      // by the pages that own them.
+      const [childBusy, setChildBusy] = useState(null);
+      const busy = snapshotJob || childBusy;
+      const snapshotBusy = Boolean(snapshotJob);
+
+      // Tell the shell whether a long operation is in flight, so closing the
+      // panel can ask first.
+      useEffect(() => {
+        if (typeof onBusyChange !== 'function') return undefined;
+        onBusyChange(busy ? { label: busy.label, message: busy.message } : null);
+        return () => onBusyChange(null);
+      }, [busy ? busy.label : null, busy ? busy.message : null, onBusyChange]);
       const [dialogOpen, setDialogOpen] = useState(false);
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
@@ -1706,14 +1748,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const trackIndex = view === 'world' ? 0 : view === 'story' ? 1 : 2;
 
       return h('div', { className: 'dsn-stage' },
-        // A running snapshot job owns the work: nothing else may be edited
-        // while it rewrites snapshots underneath.
-        snapshotBusy
+        // Any running job owns the work: nothing else may be edited while it
+        // rewrites the novel underneath.
+        busy
           ? h('div', { className: 'dsn-lock' },
             h('div', { className: 'dsn-lock-box' },
-              h('div', { className: 'dsn-lock-title' }, snapshotJob.label),
-              h('div', { className: 'dsn-lock-text' }, snapshotJob.message),
-              h('div', { className: 'dsn-lock-hint' }, t('快照生成期间界面不可操作，完成后会自动刷新', 'The studio is locked while snapshots are generated; it refreshes when done.'))))
+              h('div', { className: 'dsn-lock-title' }, busy.label),
+              h('div', { className: 'dsn-lock-text' }, busy.message),
+              h('div', { className: 'dsn-lock-hint' }, t('生成期间界面不可操作，完成后会自动刷新', 'The studio is locked while this runs; it refreshes when done.'))))
           : null,
         h('div', { className: 'dsn-track', style: { transform: `translateX(-${trackIndex * 100}%)` } },
           h('section', { className: 'dsn-page' },
@@ -1756,6 +1798,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               notify,
               onRegisterGuard: registerOutlineGuard,
               requestConfirm: setConfirmRequest,
+              onBusyChange: setChildBusy,
               isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
         confirmRequest
@@ -1804,6 +1847,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             onCancel: () => setDialogOpen(false),
             onCreated: created,
             notify,
+            onBusyChange: setChildBusy,
           })
           : null);
     }
@@ -1818,6 +1862,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [projectId, setProjectId] = useState(null);
       const [detail, setDetail] = useState(null);
       const [toast, setToast] = useToast();
+      // Set while a work runs a model job, so leaving the panel can warn first.
+      const [busyNow, setBusyNow] = useState(null);
       const [modelTarget, setModelTarget] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
@@ -1825,13 +1871,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, []);
       /** Every way out of the studio asks the workspace first. */
       const requestLeave = useCallback((proceed) => {
+        // A running generation outranks the editor guard: say it is still going
+        // before anything closes.
+        if (busyNow) {
+          const label = busyNow.label || t('正在生成', 'Generation is running');
+          if (!window.confirm(t('{label}，现在离开吗？生成会在后台继续，回来时刷新即可看到结果。', '{label} — leave now? It keeps running in the background; reopen the panel later to see the result.', { label }))) return;
+          proceed();
+          return;
+        }
         const guard = leaveGuard.current;
         if (typeof guard === 'function') {
           guard(proceed);
           return;
         }
         proceed();
-      }, []);
+      }, [busyNow]);
       const close = useCallback(() => requestLeave(() => setOverlayOpen(false)), [requestLeave]);
 
       const loadBoot = useCallback(async () => {
@@ -1911,6 +1965,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onReload: reloadDetail,
                   notify,
                   onRegisterLeaveGuard: registerLeaveGuard,
+                  onBusyChange: setBusyNow,
                 })),
         modelTarget
           ? h(ModelDialog, {
