@@ -1040,8 +1040,10 @@ function snapshotPrompt(project, previous, chapters, pointDay) {
   lines.push('');
   lines.push('要求：');
   lines.push('- 保留上一版中尚未被推翻的设定；角色、势力要包含新登场者；关系用「甲 乙 关系」三段式。');
-  lines.push('- items 记录这段时间出现或变化的关键物品（下落、归属、状态）；没有就给空数组。');
-  lines.push(`- events 记录这段时间发生的具体事件，day 用故事天数（整数，不超过 ${pointDay}），title 一行、desc 一两句，最近的排最前；没有就给空数组。`);
+  lines.push('- items 必填：列出这段时间出现、易手或状态变化的关键物品（法宝、信物、丹药、线索等），每项 name + desc（下落/归属/用途）。');
+  lines.push(`- events 必填：这段时间每发生一件值得记录的事就写一条，day 为故事天数（整数，0~${pointDay}），title 一行，desc 一两句，按 day 从大到小排列。只要这段时间有章节内容，就至少写 1 条。`);
+  lines.push('- 只有这段时间确实没有任何可记录的物品或事件时，才给空数组。');
+  lines.push('注意：输出的 JSON 必须同时包含 items 与 events 两个键，缺任何一个都算不合格（没有内容就写 []）。');
   lines.push('不要调用任何工具，不要反问，只输出这个 JSON。');
   return lines.join('\n');
 }
@@ -1146,7 +1148,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.20',
+    revision: '2026-10-20.28',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1505,22 +1507,25 @@ function chaptersForPoint(project, fromDay, point) {
  */
 function registerSnapshot(ctx, root, registry, projectId, targetDay) {
   return startJob(registry, { kind: 'snapshot', projectId }, async (job) => {
+    // The sequence is fixed from the state at the start of the job: recomputing
+    // it every round would regenerate the last point forever once it exists.
+    const initial = await readProject(root, projectId);
+    const unit = Math.max(1, initial.timeline.unitDays || 30);
+    const target = Math.floor(Math.max(1, Math.round(Number(targetDay) || 0)) / unit) * unit;
+    if (target < unit) throw httpError(409, '目标时间还不到一个快照间隔，无法生成世界快照');
+    const startBase = (initial.snapshots || []).filter((snapshot) => snapshot.day < target).pop() || null;
+    let first = (startBase ? startBase.day : 0) + unit;
+    // Nothing new below the target means "redo the target point itself".
+    if (first > target) first = target;
+    const points = [];
+    for (let point = first; point <= target; point += unit) points.push(point);
+
     const made = [];
-    let target = Math.max(1, Math.round(Number(targetDay) || 0));
-    for (;;) {
+    for (const point of points) {
       const project = await readProject(root, projectId);
-      const unit = Math.max(1, project.timeline.unitDays || 30);
-      target = Math.floor(target / unit) * unit;
-      if (target < unit) throw httpError(409, '目标时间还不到一个快照间隔，无法生成世界快照');
-      const snapshots = project.snapshots || [];
-      const base = snapshots.filter((snapshot) => snapshot.day < target).pop() || null;
-      const point = (base ? base.day : 0) + unit;
-      if (point > target) {
-        await exportProjectInfo(await readProject(root, projectId));
-        return { made, target };
-      }
+      const base = (project.snapshots || []).filter((snapshot) => snapshot.day < point).pop() || null;
       const chapters = chaptersForPoint(project, base ? base.day : 0, point);
-      job.message = `正在生成第 ${point} 天的世界快照（第 ${made.length + 1} 份，目标第 ${target} 天）`;
+      job.message = `正在生成第 ${point} 天的世界快照（第 ${made.length + 1}/${points.length} 份，目标第 ${target} 天）`;
       const reply = await askAgent(ctx, project, snapshotPrompt(project, base, chapters, point));
       const parsed = parseJsonReply(reply);
       if (!parsed) throw httpError(502, '模型没有返回可解析的快照 JSON');
@@ -1528,6 +1533,25 @@ function registerSnapshot(ctx, root, registry, projectId, targetDay) {
       if (normalized.world === '' && normalized.characters.length === 0 && normalized.factions.length === 0) {
         throw httpError(502, '模型返回的快照为空');
       }
+      // A chapter boundary is a fact of the work itself, so it seeds the event
+      // list even when the model leaves `events` empty; model-written events win
+      // by title and anything else is added.
+      const seeded = chapters.map((chapter) => {
+        const span = chapterWindow(project, chapter);
+        return {
+          day: span.end,
+          title: chapter.title || `第 ${chapter.index + 1} 章`,
+          desc: ((chapter.outline && chapter.outline.synopsis) || '').slice(0, 120),
+        };
+      });
+      const known = new Set(normalized.events.map((event) => event.title));
+      for (const event of seeded) {
+        if (!known.has(event.title)) {
+          normalized.events.push(event);
+          known.add(event.title);
+        }
+      }
+      normalized.events.sort((a, b) => (b.day === null ? -1 : b.day) - (a.day === null ? -1 : a.day));
       const snapshot = {
         snapshotId: randomUUID(),
         day: point,
@@ -1545,6 +1569,8 @@ function registerSnapshot(ctx, root, registry, projectId, targetDay) {
       await exportSnapshot(project, snapshot);
       made.push(point);
     }
+    await exportProjectInfo(await readProject(root, projectId));
+    return { made, target };
   });
 }
 

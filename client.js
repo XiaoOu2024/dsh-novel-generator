@@ -197,6 +197,11 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
 /* workspace track */
 .dsn-stage{flex:1;position:relative;overflow:hidden;min-width:0}
+.dsn-lock{position:absolute;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb, var(--dsw-alias-bg-overlay) 88%, transparent);backdrop-filter:blur(2px);cursor:progress}
+.dsn-lock-box{max-width:420px;padding:20px 24px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);box-shadow:0 18px 48px rgba(0,0,0,.28);text-align:center}
+.dsn-lock-title{font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dsn-lock-text{margin-top:8px;font-size:13px;line-height:1.6;color:var(--dsw-alias-label-secondary);word-break:break-word}
+.dsn-lock-hint{margin-top:10px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
 .dsn-track{display:flex;height:100%;transition:transform .28s ease}
 .dsn-page{width:100%;height:100%;flex:0 0 100%;display:flex;flex-direction:column;min-width:0}
 .dsn-pagehead{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--dsw-alias-border-l1)}
@@ -1465,7 +1470,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     function ProjectWorkspace({ detail, onReload, notify, onRegisterLeaveGuard }) {
       const [view, setView] = useState('world');
       const [chapterId, setChapterId] = useState(null);
-      const [snapshotBusy, setSnapshotBusy] = useState(false);
+      // A running snapshot job: { label, message }. Non-null locks the studio,
+      // because the job keeps rewriting this work's snapshots.
+      const [snapshotJob, setSnapshotJob] = useState(null);
+      const snapshotBusy = snapshotJob !== null;
       const [dialogOpen, setDialogOpen] = useState(false);
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
@@ -1583,36 +1591,57 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         }
       }, [detail.projectId, onReload, notify]);
 
-      /** Poll one snapshot job until it settles, then refresh the work. */
-      const waitSnapshotJob = useCallback((jobId, doneText) => {
+      /**
+       * Poll one snapshot job until it settles. While it runs the studio stays
+       * locked and the work is reloaded on every tick, so newly written
+       * snapshots appear on the timeline as they land.
+       */
+      const waitSnapshotJob = useCallback((jobId, label, doneText) => {
+        setSnapshotJob({ label, message: label });
+        let failures = 0;
+        const startedAt = Date.now();
         const timer = setInterval(async () => {
           try {
             const job = await api(`/job?id=${encodeURIComponent(jobId)}`);
-            if (job.state === 'running') return;
-            clearInterval(timer);
-            setSnapshotBusy(false);
-            if (job.state === 'done') {
-              notify(doneText, 'success');
+            failures = 0;
+            if (job.state === 'running') {
+              if (Date.now() - startedAt > 45 * 60 * 1000) {
+                clearInterval(timer);
+                setSnapshotJob(null);
+                notify(t('快照任务超时，已解除锁定', 'The snapshot job timed out; the studio is unlocked.'), 'error');
+                return;
+              }
+              setSnapshotJob({ label, message: job.message || label });
               await onReload();
-            } else {
-              notify(job.error || t('世界快照更新失败', "World snapshot update failed"), 'error');
+              return;
             }
-          } catch (error) {
             clearInterval(timer);
-            setSnapshotBusy(false);
-            notify(messageOf(error), 'error');
+            setSnapshotJob(null);
+            await onReload();
+            if (job.state === 'done') notify(doneText, 'success');
+            else notify(job.error || t('世界快照更新失败', "World snapshot update failed"), 'error');
+          } catch (error) {
+            failures += 1;
+            // Three failed polls in a row mean the studio cannot be held.
+            if (failures >= 3) {
+              clearInterval(timer);
+              setSnapshotJob(null);
+              notify(messageOf(error), 'error');
+            }
           }
         }, 2500);
       }, [onReload, notify]);
 
       const refreshSnapshot = useCallback(async (day) => {
-        setSnapshotBusy(true);
         try {
           const started = await api('/snapshot/refresh', { projectId: detail.projectId, day });
           notify(t('正在结算世界快照…', "Settling the world snapshot…"), 'success');
-          waitSnapshotJob(started.jobId, t('世界快照已更新，时间线向前延伸', "World snapshot updated; the timeline moved forward."));
+          waitSnapshotJob(
+            started.jobId,
+            t('正在生成第 {day} 天的世界快照…', 'Generating the world snapshot for day {day}…', { day }),
+            t('世界快照已更新，时间线向前延伸', "World snapshot updated; the timeline moved forward."),
+          );
         } catch (error) {
-          setSnapshotBusy(false);
           notify(messageOf(error), 'error');
         }
       }, [detail.projectId, notify, waitSnapshotJob]);
@@ -1627,13 +1656,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           text: t('将清除所有世界快照，并按当前间隔（每 {unit} 天）从第 {unit} 天起逐格重建到第 {end} 天，共 {count} 份。每份都要调用一次模型，耗时较长。', 'Every world snapshot is deleted and rebuilt point by point — {count} of them, from day {unit} to day {end} at the current {unit}-day interval. Each one calls the model, so this takes a while.', { unit, end, count: Math.max(0, Math.floor(end / unit)) }),
           confirmLabel: t('清除并重建', 'Clear and rebuild'),
           action: async () => {
-            setSnapshotBusy(true);
             try {
               const started = await api('/snapshot/reset', { projectId: detail.projectId });
-              notify(t('正在重建世界快照…', 'Rebuilding world snapshots…'), 'success');
-              waitSnapshotJob(started.jobId, t('世界快照已全部重建', 'All world snapshots rebuilt'));
+              waitSnapshotJob(
+                started.jobId,
+                t('正在重建世界快照…', 'Rebuilding world snapshots…'),
+                t('世界快照已全部重建', 'All world snapshots rebuilt'),
+              );
             } catch (error) {
-              setSnapshotBusy(false);
               notify(messageOf(error), 'error');
             }
           },
@@ -1643,6 +1673,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const trackIndex = view === 'world' ? 0 : view === 'story' ? 1 : 2;
 
       return h('div', { className: 'dsn-stage' },
+        // A running snapshot job owns the work: nothing else may be edited
+        // while it rewrites snapshots underneath.
+        snapshotBusy
+          ? h('div', { className: 'dsn-lock' },
+            h('div', { className: 'dsn-lock-box' },
+              h('div', { className: 'dsn-lock-title' }, snapshotJob.label),
+              h('div', { className: 'dsn-lock-text' }, snapshotJob.message),
+              h('div', { className: 'dsn-lock-hint' }, t('快照生成期间界面不可操作，完成后会自动刷新', 'The studio is locked while snapshots are generated; it refreshes when done.'))))
+          : null,
         h('div', { className: 'dsn-track', style: { transform: `translateX(-${trackIndex * 100}%)` } },
           h('section', { className: 'dsn-page' },
             h(WorldPage, {
