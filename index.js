@@ -877,6 +877,21 @@ async function resolveAgent(ctx, root, project, onNote) {
     if (onNote) onNote('作品没有绑定会话，已新建一个会话');
     return rebuilt;
   }
+  // Archived sessions still resolve, so visibility decides instead: a session
+  // the user archived is no longer one of the plugin's working sessions.
+  let archived = false;
+  try {
+    const list = await controller.list({}, new AbortController().signal);
+    const items = list && Array.isArray(list.items) ? list.items : null;
+    if (items) archived = !items.some((entry) => entry.sessionId === project.sessionId);
+  } catch {
+    archived = false;
+  }
+  if (archived) {
+    const rebuilt = await rebindSession(ctx, root, project);
+    if (onNote) onNote('作品的会话已被归档，已自动新建一个会话继续');
+    return rebuilt;
+  }
   let result = null;
   try {
     result = await controller.resolveAgent(project.sessionId);
@@ -953,7 +968,7 @@ async function askAgent(ctx, root, project, prompt, onNote) {
     }
   }
   throw rebuilt
-    ? httpError(502, '作品的旧会话已不存在，已为它新建一个会话，但模型没有回复；请在侧栏打开这部作品的会话（「小说工坊」分组里）后再试一次')
+    ? httpError(502, '作品的旧会话已不存在，已为它新建一个会话，但模型没有回复；请先打开这部作品的会话（「小说工坊」分组里），或在作品列表点「重建会话」后再试')
     : httpError(502, '模型没有返回任何正文');
 }
 
@@ -1280,7 +1295,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.40',
+    revision: '2026-10-20.42',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1373,6 +1388,34 @@ async function createProject(ctx, root, body) {
     detail: project,
     warning,
     workspace: workspace ? { workspaceId: workspace.id, title: workspace.title, path: workspace.path } : null,
+  };
+}
+
+/**
+ * Give the work a brand-new Session on demand.
+ *
+ * Archiving leaves a session resolvable but unusable for new turns, and the
+ * registry exposes no "is archived" query, so the user gets an explicit button
+ * instead of the plugin guessing.
+ */
+async function rebindProject(ctx, root, body) {
+  const projectId = asText(body.projectId);
+  if (projectId === '') throw httpError(400, '缺少 projectId');
+  const project = await readProject(root, projectId);
+  const previous = project.sessionId;
+  const { controller } = await rebindSession(ctx, root, project);
+  let agentReady = true;
+  try {
+    const result = await controller.resolveAgent(project.sessionId);
+    agentReady = Boolean(result && result.agent);
+  } catch {
+    agentReady = false;
+  }
+  return {
+    sessionId: project.sessionId,
+    previousSessionId: previous,
+    agentReady,
+    project: summarize(await readProject(root, projectId)),
   };
 }
 
@@ -2065,6 +2108,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return updateTimeline(root, body);
     case '/project/model':
       return updateModel(ctx, root, body);
+    case '/project/rebind':
+      return rebindProject(ctx, root, body);
     case '/outline/save':
       return saveOutline(root, body);
     case '/chapter/save':

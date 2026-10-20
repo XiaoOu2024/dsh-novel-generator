@@ -600,6 +600,24 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               },
             }, t('模型', "Model")),
             h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('给这部作品换一个新的创作会话（会话被归档或删掉、生成时提示无回复时使用）', 'Give this work a fresh session (use it after archiving or deleting the old one, or when generation reports no reply)'),
+              onClick: async (event) => {
+                event.stopPropagation();
+                if (!window.confirm(t('为「{title}」新建一个创作会话？旧会话会留在侧栏，作品正文与快照不受影响。', 'Create a fresh session for “{title}”? The old one stays in the sidebar; chapters and snapshots are untouched.', { title: project.title }))) return;
+                try {
+                  const result = await api('/project/rebind', { projectId: project.projectId });
+                  await onReload();
+                  setError(result.agentReady
+                    ? t('已为作品新建创作会话', 'A fresh session is bound to this work')
+                    : t('会话已新建，但还无法启动；请稍后再试或重开面板', 'The session was created but could not start yet — try again shortly.'));
+                } catch (rebindError) {
+                  setError(messageOf(rebindError));
+                }
+              },
+            }, t('重建会话', "New session")),
+            h('button', {
               className: 'dsn-btn danger ghost',
               type: 'button',
               onClick: (event) => {
