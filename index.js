@@ -939,66 +939,105 @@ function snapshotAt(project, day) {
   return snapshots[snapshots.length - 1];
 }
 
+/**
+ * How far the nearest snapshot sits behind a chapter's start.
+ *
+ * The rule both prompts share: the nearest snapshot node at or before the
+ * chapter wins. If the chapter starts more than one interval after that node,
+ * the snapshot is too stale to write from and the Client is told to update it
+ * first — the same rule for 自动推演 and for writing the chapter body.
+ */
+function snapshotDistance(project, chapter) {
+  const span = chapterWindow(project, chapter);
+  const unit = Math.max(1, project.timeline.unitDays || 30);
+  const snapshot = snapshotAt(project, span.start) || null;
+  const base = snapshot ? snapshot.day : 0;
+  const gap = Math.max(0, span.start - base);
+  return { snapshot, unit, base, gap, tooFar: gap > unit, startDay: span.start };
+}
+
+/** Chapters from the snapshot node up to (not including) the target chapter. */
+function stretchBefore(project, chapter, snapshot) {
+  const base = snapshot ? snapshot.day : 0;
+  return (project.chapters || [])
+    .filter((entry) => entry.chapterId !== chapter.chapterId
+      && entry.startDay < chapter.startDay
+      && chapterWindow(project, entry).end > base
+      && ((entry.outline && entry.outline.synopsis) || '').trim() !== '')
+    .sort((a, b) => a.startDay - b.startDay);
+}
+
+/**
+ * Refuse to write from a snapshot that has drifted more than one interval
+ * behind the chapter, and say what the user has to do about it.
+ */
+function assertSnapshotFresh(project, chapter) {
+  const distance = snapshotDistance(project, chapter);
+  if (!distance.tooFar) return distance;
+  const from = distance.base > 0 ? `第 ${distance.base} 天` : '故事开篇（还没有任何快照）';
+  throw httpError(409, `最近的世界快照停在${from}，本章从第 ${distance.startDay} 天开始，间隔 ${distance.gap} 天已超过当前快照间隔（${distance.unit} 天）；请先在时间长河点「更新世界快照」再来生成`);
+}
+
+function stretchLines(project, chapter, snapshot) {
+  const lines = [];
+  const stretch = stretchBefore(project, chapter, snapshot);
+  if (stretch.length === 0) return lines;
+  lines.push(snapshot
+    ? `【已发生的章节梗概 · 第 ${snapshot.day} 天之后到上一章】`
+    : '【已发生的章节梗概 · 开篇到上一章】');
+  for (const entry of stretch) {
+    lines.push(`- 第 ${entry.index + 1} 章 ${entry.title || ''}（第 ${entry.startDay}→${entry.startDay + entry.durationDays} 天）：${entry.outline.synopsis}`);
+  }
+  lines.push('');
+  return lines;
+}
+
 function chapterPrompt(project, chapter, previous) {
   const window = chapterWindow(project, chapter);
   const outline = chapter.outline || {};
-  const snapshot = snapshotAt(project, window.start);
-  // Everything written since that snapshot: the chapter is the continuation of
-  // this stretch, not just of the chapter right before it.
-  const recent = (project.chapters || [])
-    .filter((entry) => entry.chapterId !== chapter.chapterId
-      && entry.startDay < window.start
-      && (!snapshot || chapterWindow(project, entry).end > snapshot.day)
-      && (((entry.outline && entry.outline.synopsis) || '').trim() !== ''))
-    .sort((a, b) => a.startDay - b.startDay);
+  const { snapshot } = snapshotDistance(project, chapter);
   const lines = [];
   lines.push('你现在是这部小说的执笔作者。只输出本章正文，不要解释、不要标题、不要分点提纲。');
   lines.push('');
-  lines.push(`【章节】第 ${chapter.index + 1} 章 ${chapter.title || ''}（${dateForDay(project, window.start)} 起，跨度 ${chapter.durationDays} 天）`);
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${window.start}→${window.end} 天，跨度 ${chapter.durationDays} 天）`);
   lines.push('');
-  lines.push('【当前世界快照】');
+  lines.push('【最近的世界快照】');
   lines.push(snapshotBlock(snapshot));
   lines.push('');
-  if (recent.length) {
-    lines.push(snapshot ? `【第 ${snapshot.day} 天之后各章梗概】` : '【此前各章梗概】');
-    for (const entry of recent) {
-      lines.push(`- 第 ${entry.index + 1} 章 ${entry.title || ''}：${entry.outline.synopsis}`);
-    }
-    lines.push('');
+  const stretch = stretchLines(project, chapter, snapshot);
+  if (stretch.length) {
+    lines.push(...stretch);
   } else if (previous) {
     lines.push('【上一章梗概】');
     lines.push(`${previous.title || ''}：${(previous.outline && previous.outline.synopsis) || '（无）'}`);
     lines.push('');
   }
-  lines.push('【本章梗概】');
+  lines.push('【本章梗概 · 待生成的部分】');
   lines.push(outline.synopsis || '（无）');
   lines.push('');
   lines.push('【要求】');
+  lines.push('- 以上"已发生的章节梗概"是既定事实，不得改写；本章正文要接着它往下写。');
+  lines.push('- 按"本章梗概"把这一章的内容写出来，情节推进、场景与对话要完整。');
   lines.push('- 不要调用任何工具，不要反问，不要输出计划或步骤说明，直接给出最终正文。');
   lines.push(`- 字数控制在 ${outline.minWords || 800} 到 ${outline.maxWords || 3000} 字之间。`);
   lines.push('- 与世界观、角色、势力、物品、事件和人物关系保持一致，不要引入与快照冲突的设定。');
-  lines.push('- 有完整的情节推进、场景描写和对话，直接成文。');
   return lines.join('\n');
 }
 
 function deducePrompt(project, chapter) {
-  const day = chapter ? chapterWindow(project, chapter).start : (Number(project.timeline.cursor) || 0);
-  const snapshot = snapshotAt(project, day);
-  const chapters = project.chapters || [];
-  const previous = chapters.length ? chapters[chapters.length - 1] : null;
+  const target = chapter
+    ? chapter
+    : { chapterId: '', startDay: Number(project.timeline.cursor) || 0, durationDays: 0, index: (project.chapters || []).length };
+  const { snapshot } = snapshotDistance(project, target);
   const lines = [];
-  lines.push('你是这部小说的剧情推演器。请依据最新世界快照和最近一章，推演下一章的大纲。');
+  lines.push('你是这部小说的剧情推演器。请依据最近的世界快照，以及从该快照之后已经写过的各章梗概，推演下一章的大纲。');
   lines.push('只输出一个 JSON 对象，不要任何额外文字。');
   lines.push('');
-  lines.push('【最新世界快照】');
+  lines.push('【最近的世界快照】');
   lines.push(snapshotBlock(snapshot));
   lines.push('');
-  if (previous) {
-    lines.push('【最近一章】');
-    lines.push(`${previous.title || ''}（第 ${previous.startDay} 天起，跨度 ${previous.durationDays} 天）`);
-    lines.push(`梗概：${(previous.outline && previous.outline.synopsis) || '（无）'}`);
-    lines.push('');
-  }
+  const stretch = stretchLines(project, target, snapshot);
+  if (stretch.length) lines.push(...stretch);
   lines.push('【输出 JSON 结构】');
   lines.push('{"synopsis": "本章梗概，300 字以内，包含起因、经过、转折", "durationDays": 30, "minWords": 1200, "maxWords": 3500, "title": "本章标题"}');
   lines.push('');
@@ -1148,7 +1187,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.28',
+    revision: '2026-10-20.32',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1606,14 +1645,22 @@ function startSnapshotReset(ctx, root, registry, body) {
   });
 }
 
-function startGenerate(ctx, root, registry, body) {
+async function startGenerate(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
+  // Refuse before the job is queued, so the Client sees a plain 409 instead of
+  // a job that fails a second later.
+  const preview = await readProject(root, projectId);
+  const claimed = preview.chapters.find((entry) => entry.chapterId === chapterId);
+  if (!claimed) throw httpError(404, `章节不存在: ${chapterId}`);
+  if (!claimed.outline) throw httpError(409, '请先在章节大纲里保存设定，再生成正文');
+  assertSnapshotFresh(preview, claimed);
   return startJob(registry, { kind: 'generate', projectId, chapterId }, async (job) => {
     const project = await readProject(root, projectId);
     const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
     if (!chapter.outline) throw httpError(409, '请先在章节大纲里保存设定，再生成正文');
+    assertSnapshotFresh(project, chapter);
     const previous = project.chapters
       .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay <= chapter.startDay)
       .sort((a, b) => b.startDay - a.startDay)[0] || null;
@@ -1646,8 +1693,25 @@ function startGenerate(ctx, root, registry, body) {
  * chapter in place (the outline page's 自动推演, which overwrites everything);
  * without it the job appends a new one (the new-chapter dialog).
  */
-function startCompose(ctx, root, registry, body) {
+async function startCompose(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
+  // Same early refusal as writing: a stale snapshot stops the job from being
+  // queued at all.
+  const preview = await readProject(root, projectId);
+  const claimedId = asText(body.chapterId);
+  const claimed = claimedId === ''
+    ? null
+    : (preview.chapters || []).find((entry) => entry.chapterId === claimedId) || null;
+  if (claimedId !== '' && !claimed) throw httpError(404, `章节不存在: ${claimedId}`);
+  const claimedStart = claimed
+    ? claimed.startDay
+    : (Number.isFinite(Number(body.startDay)) ? Math.max(0, Math.round(Number(body.startDay))) : lastChapterEnd(preview));
+  assertSnapshotFresh(preview, claimed || {
+    chapterId: '',
+    startDay: claimedStart,
+    durationDays: Math.round(Number(body.durationDays) || 0) || 1,
+    index: (preview.chapters || []).length,
+  });
   return startJob(registry, { kind: 'compose', projectId }, async (job) => {
     const minWords = Math.round(Number(body.minWords) || 0);
     const maxWords = Math.round(Number(body.maxWords) || 0);
@@ -1686,6 +1750,7 @@ function startCompose(ctx, root, registry, body) {
       outline: null,
     };
     const previous = previousChapter(project, draft);
+    assertSnapshotFresh(project, draft);
 
     job.message = '正在推演本章梗概与名称';
     const deduceReply = await askAgent(ctx, project, deducePrompt(project, draft));
@@ -1763,9 +1828,19 @@ function startCompose(ctx, root, registry, body) {
   });
 }
 
-function startDeduce(ctx, root, registry, body) {
+async function startDeduce(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
+  // The outline page's 自动推演 follows the same freshness rule as writing, and
+  // refuses before queuing as well.
+  const preview = await readProject(root, projectId);
+  const claimed = chapterId === '' ? null : preview.chapters.find((entry) => entry.chapterId === chapterId) || null;
+  assertSnapshotFresh(preview, claimed || {
+    chapterId: '',
+    startDay: Number(preview.timeline.cursor) || lastChapterEnd(preview),
+    durationDays: 0,
+    index: (preview.chapters || []).length,
+  });
   return startJob(registry, { kind: 'deduce', projectId, chapterId }, async (job) => {
     const project = await readProject(root, projectId);
     const chapter = chapterId === '' ? null : project.chapters.find((entry) => entry.chapterId === chapterId) || null;
