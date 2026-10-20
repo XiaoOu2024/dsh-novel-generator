@@ -1073,7 +1073,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.17',
+    revision: '2026-10-20.18',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1402,15 +1402,17 @@ function registerSnapshot(ctx, root, registry, projectId, day) {
   return startJob(registry, { kind: 'snapshot', projectId }, async (job) => {
     const project = await readProject(root, projectId);
     const snapshots = project.snapshots || [];
-    const last = snapshots[snapshots.length - 1] || null;
-    const since = last ? last.day : 0;
+    // Regenerating an existing day replaces it: the basis is the snapshot
+    // before that day, not the one being replaced.
+    const base = snapshots.filter((snapshot) => snapshot.day < day).pop() || null;
+    const since = base ? base.day : 0;
     const chapters = (project.chapters || [])
       .filter((chapter) => chapterWindow(project, chapter).end > since
         && (((chapter.outline && chapter.outline.synopsis) || '').trim() !== '' || String(chapter.content || '').trim() !== ''))
       .sort((a, b) => a.startDay - b.startDay);
-    if (chapters.length === 0) throw httpError(409, '自上一版快照以来还没有已生成的章节，无法更新世界快照');
+    if (chapters.length === 0) throw httpError(409, `第 ${day} 天之前还没有可依据的章节，无法生成世界快照`);
     job.message = `正在阅读 ${chapters.length} 章的梗概并更新世界快照`;
-    const reply = await askAgent(ctx, project, snapshotPrompt(project, last, chapters));
+    const reply = await askAgent(ctx, project, snapshotPrompt(project, base, chapters));
     const parsed = parseJsonReply(reply);
     if (!parsed) throw httpError(502, '模型没有返回可解析的快照 JSON');
     const normalized = normalizeSnapshot(parsed);
@@ -1425,7 +1427,10 @@ function registerSnapshot(ctx, root, registry, projectId, day) {
       ...normalized,
     };
     await mutateProject(root, projectId, (draft) => {
+      // One snapshot per day: regenerating replaces the one already there.
+      draft.snapshots = (draft.snapshots || []).filter((entry) => entry.day !== day);
       draft.snapshots.push(snapshot);
+      draft.snapshots.sort((a, b) => a.day - b.day);
       return snapshot;
     });
     await exportSnapshot(project, snapshot);
