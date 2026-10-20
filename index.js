@@ -835,22 +835,59 @@ function normalizeSnapshot(raw) {
 
 /* ------------------------------------------------------------ agent work */
 
+/**
+ * Bind a fresh session to a work whose old one disappeared (deleted in the
+ * sidebar, or gone from the session store). The work's memory — snapshots,
+ * chapters, outlines — lives in files, so a new session loses only chat
+ * history, not the novel itself.
+ */
+async function rebindSession(ctx, root, project) {
+  const controller = ctx.get('sessionController');
+  if (controller === undefined) throw httpError(503, '当前部署缺少 sessionController 服务，无法为作品重建会话');
+  const created = await controller.create(project.agentPreset ? { cwd: project.cwd, agentPreset: project.agentPreset } : { cwd: project.cwd });
+  const sessionId = created && created.sessionId ? created.sessionId : null;
+  if (!sessionId) throw httpError(502, '没能为作品重建会话');
+  if (project.model) {
+    try {
+      await controller.selectModel({ sessionId, ...project.model });
+    } catch {
+      // The rebuilt session still works with the profile's default model.
+    }
+  }
+  project.sessionId = sessionId;
+  await mutateProject(root, project.projectId, (draft) => {
+    draft.sessionId = sessionId;
+  });
+  try {
+    await ensureWorkspace(ctx, project);
+  } catch {
+    // Grouping is cosmetic; the session works either way.
+  }
+  const result = await controller.resolveAgent(sessionId);
+  if (!result || !result.agent) throw httpError(502, '重建的会话无法启动');
+  return { controller, agent: result.agent };
+}
+
 /** Resolve (or resume) the ordinary Agent that owns one project's Session. */
-async function resolveAgent(ctx, project) {
+async function resolveAgent(ctx, root, project, onNote) {
   const controller = ctx.get('sessionController');
   if (controller === undefined) throw httpError(503, '当前部署缺少 sessionController 服务，无法驱动创作会话');
-  if (!project.sessionId) throw httpError(409, '这个作品还没有绑定会话');
-  let result;
+  if (!project.sessionId) {
+    const rebuilt = await rebindSession(ctx, root, project);
+    if (onNote) onNote('作品没有绑定会话，已新建一个会话');
+    return rebuilt;
+  }
+  let result = null;
   try {
     result = await controller.resolveAgent(project.sessionId);
-  } catch (error) {
-    throw httpError(502, `无法恢复作品会话：${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    result = null;
   }
-  if (!result || !result.agent) {
-    const code = result && result.error && result.error.code ? result.error.code : 'unknown';
-    throw httpError(502, `无法恢复作品会话（${code}）`);
-  }
-  return { controller, agent: result.agent };
+  if (result && result.agent) return { controller, agent: result.agent };
+  // The old session is gone: rebuild instead of failing every later call.
+  const rebuilt = await rebindSession(ctx, root, project);
+  if (onNote) onNote('原作品会话已不存在，已自动新建一个会话继续');
+  return rebuilt;
 }
 
 function withTimeout(promise, ms, onTimeout) {
@@ -868,32 +905,47 @@ function withTimeout(promise, ms, onTimeout) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Send one prompt into the project's own Session and return the reply text. */
-async function askAgent(ctx, project, prompt) {
-  const { controller, agent } = await resolveAgent(ctx, project);
-  const admission = new AbortController();
-  await withTimeout(controller.prompt({
-    sessionId: project.sessionId,
-    requestId: `novel-${randomUUID()}`,
-    mode: 'queue',
-    content: [{ type: 'text', text: prompt }],
-    clientTimeZone: 'Asia/Shanghai',
-  }, admission.signal), 60 * 1000, () => admission.abort());
-  await withTimeout(agent.whenIdle(), AGENT_TIMEOUT_MS, () => {
-    try {
-      agent.cancel({ kind: 'hook', reason: 'novel-studio generation timeout' });
-    } catch {
-      // Cancellation is best effort on the failure path.
+/**
+ * Send one prompt into the project's own Session and return the reply text.
+ * A freshly rebuilt session occasionally answers nothing on its first turn, so
+ * one silent reply earns a single retry before the job fails.
+ */
+async function askAgent(ctx, root, project, prompt, onNote) {
+  let rebuilt = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const before = project.sessionId;
+    const { controller, agent } = await resolveAgent(ctx, root, project, attempt === 0 ? onNote : undefined);
+    if (project.sessionId !== before) rebuilt = true;
+    const admission = new AbortController();
+    await withTimeout(controller.prompt({
+      sessionId: project.sessionId,
+      requestId: `novel-${randomUUID()}`,
+      mode: 'queue',
+      content: [{ type: 'text', text: prompt }],
+      clientTimeZone: 'Asia/Shanghai',
+    }, admission.signal), 60 * 1000, () => admission.abort());
+    await withTimeout(agent.whenIdle(), AGENT_TIMEOUT_MS, () => {
+      try {
+        agent.cancel({ kind: 'hook', reason: 'novel-studio generation timeout' });
+      } catch {
+        // Cancellation is best effort on the failure path.
+      }
+    });
+    const messages = agent.session.deriveMessages();
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message || message.role !== 'assistant') continue;
+      const text = textOfMessage(message);
+      if (text !== '') return text;
     }
-  });
-  const messages = agent.session.deriveMessages();
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || message.role !== 'assistant') continue;
-    const text = textOfMessage(message);
-    if (text !== '') return text;
+    if (attempt === 0) {
+      if (onNote) onNote('模型这一轮没有回复，重试一次');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
   }
-  throw httpError(502, '模型没有返回任何正文');
+  throw rebuilt
+    ? httpError(502, '作品的旧会话已不存在，已为它新建一个会话，但模型没有回复；请在侧栏打开这部作品的会话（「小说工坊」分组里）后再试一次')
+    : httpError(502, '模型没有返回任何正文');
 }
 
 function snapshotBlock(snapshot) {
@@ -1187,7 +1239,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.32',
+    revision: '2026-10-20.35',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1565,7 +1617,9 @@ function registerSnapshot(ctx, root, registry, projectId, targetDay) {
       const base = (project.snapshots || []).filter((snapshot) => snapshot.day < point).pop() || null;
       const chapters = chaptersForPoint(project, base ? base.day : 0, point);
       job.message = `正在生成第 ${point} 天的世界快照（第 ${made.length + 1}/${points.length} 份，目标第 ${target} 天）`;
-      const reply = await askAgent(ctx, project, snapshotPrompt(project, base, chapters, point));
+      const reply = await askAgent(ctx, root, project, snapshotPrompt(project, base, chapters, point), (note) => {
+        job.message = note;
+      });
       const parsed = parseJsonReply(reply);
       if (!parsed) throw httpError(502, '模型没有返回可解析的快照 JSON');
       const normalized = normalizeSnapshot(parsed);
@@ -1665,7 +1719,9 @@ async function startGenerate(ctx, root, registry, body) {
       .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay <= chapter.startDay)
       .sort((a, b) => b.startDay - a.startDay)[0] || null;
     job.message = '正在生成章节正文';
-    const content = await askAgent(ctx, project, chapterPrompt(project, chapter, previous));
+    const content = await askAgent(ctx, root, project, chapterPrompt(project, chapter, previous), (note) => {
+      job.message = note;
+    });
     const saved = await mutateProject(root, projectId, (draft) => {
       const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
       if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
@@ -1753,7 +1809,9 @@ async function startCompose(ctx, root, registry, body) {
     assertSnapshotFresh(project, draft);
 
     job.message = '正在推演本章梗概与名称';
-    const deduceReply = await askAgent(ctx, project, deducePrompt(project, draft));
+    const deduceReply = await askAgent(ctx, root, project, deducePrompt(project, draft), (note) => {
+      job.message = note;
+    });
     const deduced = parseJsonReply(deduceReply) || {};
     const synopsis = asText(firstOf(deduced, ['synopsis', '梗概', 'summary']));
     if (synopsis === '') throw httpError(502, '模型没有给出章节梗概');
@@ -1797,7 +1855,9 @@ async function startCompose(ctx, root, registry, body) {
     const fresh = await readProject(root, projectId);
     const target = fresh.chapters.find((entry) => entry.chapterId === chapterId);
     if (!target) throw httpError(500, '章节写入失败');
-    const content = await askAgent(ctx, fresh, chapterPrompt(fresh, target, previous));
+    const content = await askAgent(ctx, root, fresh, chapterPrompt(fresh, target, previous), (note) => {
+      job.message = note;
+    });
 
     await mutateProject(root, projectId, (current) => {
       const entry = current.chapters.find((item) => item.chapterId === chapterId);
@@ -1845,7 +1905,9 @@ async function startDeduce(ctx, root, registry, body) {
     const project = await readProject(root, projectId);
     const chapter = chapterId === '' ? null : project.chapters.find((entry) => entry.chapterId === chapterId) || null;
     job.message = '正在推演下一章大纲';
-    const reply = await askAgent(ctx, project, deducePrompt(project, chapter));
+    const reply = await askAgent(ctx, root, project, deducePrompt(project, chapter), (note) => {
+      job.message = note;
+    });
     const parsed = parseJsonReply(reply);
     if (!parsed) throw httpError(502, '模型没有返回可解析的大纲 JSON');
     const synopsis = asText(firstOf(parsed, ['synopsis', '梗概', 'summary']));
