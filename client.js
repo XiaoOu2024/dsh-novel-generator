@@ -716,7 +716,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------ world page */
 
-    function WorldPage({ detail, onTimeline, onEnterStory, onRefreshSnapshot, snapshotBusy, requestConfirm }) {
+    function WorldPage({ detail, onTimeline, onEnterStory, onRefreshSnapshot, onResetSnapshots, snapshotBusy, requestConfirm }) {
       const snapshots = detail.snapshots || [];
       const facts = detail.timelineFacts || {};
       const latest = facts.latestSnapshotDay !== undefined
@@ -800,6 +800,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             'aria-pressed': showChart,
             onClick: () => setShowChart((value) => !value),
           }, showChart ? t('隐藏统计图', "Hide chart") : t('显示统计图', "Show chart")),
+          h('button', {
+            className: 'dsn-btn ghost',
+            type: 'button',
+            disabled: snapshotBusy || chapters.length === 0,
+            title: t('清除全部世界快照，按当前间隔逐格重建', 'Clear every snapshot and rebuild them point by point at the current interval'),
+            onClick: onResetSnapshots,
+          }, t('重置快照', "Reset snapshots")),
           canSnapshot
             ? h('button', {
               className: 'dsn-btn',
@@ -840,6 +847,27 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 key: index,
                 className: 'dsn-entry',
               }, h('span', null, relation))))
+              : h('div', { className: 'dsn-muted' }, t('暂无', "None yet"))),
+          h('div', { className: 'dsn-card' },
+            h('h4', null, t('物品', "Items")),
+            snapshot && snapshot.items && snapshot.items.length
+              ? h('div', { className: 'dsn-entries' }, snapshot.items.map((item, index) => h('div', {
+                key: `${item.name}-${index}`,
+                className: 'dsn-entry',
+              }, h('b', null, item.name), h('span', null, item.desc))))
+              : h('div', { className: 'dsn-muted' }, t('暂无', "None yet"))),
+          h('div', { className: 'dsn-card', style: { gridColumn: 'span 2' } },
+            h('h4', null, t('事件', "Events")),
+            snapshot && snapshot.events && snapshot.events.length
+              ? h('div', { className: 'dsn-entries' }, snapshot.events
+                .slice()
+                .sort((a, b) => (b.day === null || b.day === undefined ? -1 : b.day) - (a.day === null || a.day === undefined ? -1 : a.day))
+                .map((event, index) => h('div', {
+                  key: `${event.title}-${index}`,
+                  className: 'dsn-entry',
+                },
+                h('b', null, event.day === null || event.day === undefined ? t('时间不详', 'Day unknown') : t('第 {day} 天', 'Day {day}', { day: event.day })),
+                h('span', null, `${event.title}${event.desc ? `：${event.desc}` : ''}`))))
               : h('div', { className: 'dsn-muted' }, t('暂无', "None yet")))),
         showChart ? h(ChapterChart, { detail }) : null);
     }
@@ -1555,34 +1583,62 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         }
       }, [detail.projectId, onReload, notify]);
 
+      /** Poll one snapshot job until it settles, then refresh the work. */
+      const waitSnapshotJob = useCallback((jobId, doneText) => {
+        const timer = setInterval(async () => {
+          try {
+            const job = await api(`/job?id=${encodeURIComponent(jobId)}`);
+            if (job.state === 'running') return;
+            clearInterval(timer);
+            setSnapshotBusy(false);
+            if (job.state === 'done') {
+              notify(doneText, 'success');
+              await onReload();
+            } else {
+              notify(job.error || t('世界快照更新失败', "World snapshot update failed"), 'error');
+            }
+          } catch (error) {
+            clearInterval(timer);
+            setSnapshotBusy(false);
+            notify(messageOf(error), 'error');
+          }
+        }, 2500);
+      }, [onReload, notify]);
+
       const refreshSnapshot = useCallback(async (day) => {
         setSnapshotBusy(true);
         try {
           const started = await api('/snapshot/refresh', { projectId: detail.projectId, day });
           notify(t('正在结算世界快照…', "Settling the world snapshot…"), 'success');
-          const timer = setInterval(async () => {
-            try {
-              const job = await api(`/job?id=${encodeURIComponent(started.jobId)}`);
-              if (job.state === 'running') return;
-              clearInterval(timer);
-              setSnapshotBusy(false);
-              if (job.state === 'done') {
-                notify(t('世界快照已更新，时间线向前延伸', "World snapshot updated; the timeline moved forward."), 'success');
-                await onReload();
-              } else {
-                notify(job.error || t('世界快照更新失败', "World snapshot update failed"), 'error');
-              }
-            } catch (error) {
-              clearInterval(timer);
-              setSnapshotBusy(false);
-              notify(messageOf(error), 'error');
-            }
-          }, 2500);
+          waitSnapshotJob(started.jobId, t('世界快照已更新，时间线向前延伸', "World snapshot updated; the timeline moved forward."));
         } catch (error) {
           setSnapshotBusy(false);
           notify(messageOf(error), 'error');
         }
-      }, [detail.projectId, onReload, notify]);
+      }, [detail.projectId, notify, waitSnapshotJob]);
+
+      /** 重置快照：清空后按当前间隔从第 1 格重建到故事末端。 */
+      const resetSnapshots = useCallback(() => {
+        const facts = detail.timelineFacts || {};
+        const unit = Math.max(1, facts.unitDays || detail.timeline.unitDays || 30);
+        const end = Math.floor((facts.storyEnd || 0) / unit) * unit;
+        setConfirmRequest({
+          title: t('重置全部世界快照？', 'Reset every world snapshot?'),
+          text: t('将清除所有世界快照，并按当前间隔（每 {unit} 天）从第 {unit} 天起逐格重建到第 {end} 天，共 {count} 份。每份都要调用一次模型，耗时较长。', 'Every world snapshot is deleted and rebuilt point by point — {count} of them, from day {unit} to day {end} at the current {unit}-day interval. Each one calls the model, so this takes a while.', { unit, end, count: Math.max(0, Math.floor(end / unit)) }),
+          confirmLabel: t('清除并重建', 'Clear and rebuild'),
+          action: async () => {
+            setSnapshotBusy(true);
+            try {
+              const started = await api('/snapshot/reset', { projectId: detail.projectId });
+              notify(t('正在重建世界快照…', 'Rebuilding world snapshots…'), 'success');
+              waitSnapshotJob(started.jobId, t('世界快照已全部重建', 'All world snapshots rebuilt'));
+            } catch (error) {
+              setSnapshotBusy(false);
+              notify(messageOf(error), 'error');
+            }
+          },
+        });
+      }, [detail, setConfirmRequest, notify, waitSnapshotJob]);
 
       const trackIndex = view === 'world' ? 0 : view === 'story' ? 1 : 2;
 
@@ -1594,6 +1650,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onTimeline: saveTimeline,
               onEnterStory: enterStory,
               onRefreshSnapshot: refreshSnapshot,
+              onResetSnapshots: resetSnapshots,
               snapshotBusy,
               requestConfirm: setConfirmRequest,
             })),
