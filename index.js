@@ -22,8 +22,12 @@ export const inject = ['webServer'];
 const ROUTE_PREFIX = '/dsh-novel-generator/api';
 /** Largest accepted JSON body: a long chapter plus its outline. */
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
-/** A generation can legitimately take minutes on a long chapter. */
-const AGENT_TIMEOUT_MS = 20 * 60 * 1000;
+/**
+ * How long one model turn may run. A model that ignores the word limit can
+ * stream for many minutes, so the bound keeps the studio responsive; what it
+ * did write is still taken when the turn is cut.
+ */
+const AGENT_TIMEOUT_MS = 6 * 60 * 1000;
 /** Finished jobs stay readable this long for a polling Client. */
 const JOB_TTL_MS = 30 * 60 * 1000;
 
@@ -722,6 +726,34 @@ function wordCount(text) {
   return String(text || '').replace(/\s+/gu, '').length;
 }
 
+/**
+ * Bring a runaway reply back inside the requested length.
+ *
+ * Models that ignore the word range keep streaming until their token cap (one
+ * real reply was 50k characters for a 1200–3500 字 request), which also repeats
+ * itself. The reply is cut at the first sign of a loop and trimmed at a sentence
+ * boundary near the upper bound, so what lands in the chapter is a chapter.
+ */
+function fitChapterText(text, maxWords) {
+  let body = String(text || '').replace(/\r\n/gu, '\n').trim();
+  const limit = Math.max(200, Math.round(Number(maxWords) || 3000));
+  // Drop a leading Markdown title line the prompt asked not to add.
+  body = body.replace(/^#{1,6}\s*[^\n]*\n+/u, '');
+  // A phrase repeated back-to-back is a degenerate loop: stop at the first one.
+  const loop = body.match(/([\s\S]{12,80}?)\1{3,}/u);
+  if (loop) body = body.slice(0, loop.index).trim();
+  if (wordCount(body) <= limit * 1.15) return { text: body, trimmed: false };
+  // Cut on a sentence end as close to the limit as possible.
+  const sentences = body.split(/(?<=[。！？…”』\n])/u);
+  let kept = '';
+  for (const sentence of sentences) {
+    if (wordCount(kept + sentence) > limit) break;
+    kept += sentence;
+  }
+  if (kept.trim() === '') kept = body.slice(0, Math.round(limit * 1.2));
+  return { text: kept.trim(), trimmed: true };
+}
+
 function textOfMessage(message) {
   const blocks = Array.isArray(message && message.content) ? message.content : [];
   return blocks
@@ -1101,11 +1133,15 @@ function stretchLines(project, chapter, snapshot) {
 function chapterPrompt(project, chapter, previous) {
   const window = chapterWindow(project, chapter);
   const outline = chapter.outline || {};
+  const minWords = outline.minWords || 800;
+  const maxWords = outline.maxWords || 3000;
   const { snapshot } = snapshotDistance(project, chapter);
   const lines = [];
   lines.push('你现在是这部小说的执笔作者。只输出本章正文，不要解释、不要标题、不要分点提纲。');
+  lines.push(`【篇幅】本章正文必须控制在 ${minWords}～${maxWords} 字之间，写够 ${maxWords} 字附近就收尾，超过 ${maxWords} 字视为不合格。`);
   lines.push('');
-  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${window.start}→${window.end} 天，跨度 ${chapter.durationDays} 天）`);
+  const shownTitle = chapter.title && !/^第\s*\d+\s*章$/u.test(chapter.title) ? ` ${chapter.title}` : '';
+  lines.push(`【本章】第 ${chapter.index + 1} 章${shownTitle}（第 ${window.start}→${window.end} 天，跨度 ${chapter.durationDays} 天）`);
   lines.push('');
   lines.push('【最近的世界快照】');
   lines.push(snapshotBlock(snapshot));
@@ -1125,7 +1161,7 @@ function chapterPrompt(project, chapter, previous) {
   lines.push('- 以上"已发生的章节梗概"是既定事实，不得改写；本章正文要接着它往下写。');
   lines.push('- 按"本章梗概"把这一章的内容写出来，情节推进、场景与对话要完整。');
   lines.push('- 不要调用任何工具，不要反问，不要输出计划或步骤说明，直接给出最终正文。');
-  lines.push(`- 字数控制在 ${outline.minWords || 800} 到 ${outline.maxWords || 3000} 字之间。`);
+  lines.push(`- 再说一次篇幅：正文 ${minWords}～${maxWords} 字，到 ${maxWords} 字就停笔，不要用重复段落凑字。`);
   lines.push('- 与世界观、角色、势力、物品、事件和人物关系保持一致，不要引入与快照冲突的设定。');
   return lines.join('\n');
 }
@@ -1208,6 +1244,36 @@ function createJobRegistry() {
     }
   };
   return { jobs, put, sweep, get: (id) => jobs.get(id) };
+}
+
+/**
+ * Stop a running job: cancel the work's agent turn, and mark the job so the
+ * Client stops polling it.
+ */
+async function cancelJob(ctx, root, registry, body) {
+  const jobId = asText(body.jobId);
+  const job = registry.get(jobId);
+  if (!job) throw httpError(404, '任务不存在或已过期');
+  const controller = ctx.get('sessionController');
+  let cancelled = false;
+  if (controller && job.projectId) {
+    try {
+      const project = await readProject(root, job.projectId);
+      if (project.sessionId) {
+        controller.cancel({ sessionId: project.sessionId });
+        cancelled = true;
+      }
+    } catch {
+      cancelled = false;
+    }
+  }
+  if (job.state === 'running') {
+    job.state = 'error';
+    job.error = '已手动停止';
+    job.message = '已手动停止';
+    job.finishedAt = Date.now();
+  }
+  return { cancelled, jobId };
 }
 
 function startJob(registry, spec, run) {
@@ -1295,7 +1361,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.42',
+    revision: '2026-10-20.44',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1841,9 +1907,12 @@ async function startGenerate(ctx, root, registry, body) {
       .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay <= chapter.startDay)
       .sort((a, b) => b.startDay - a.startDay)[0] || null;
     job.message = '正在生成章节正文';
-    const content = await askStory(ctx, root, project, chapterPrompt(project, chapter, previous), (note) => {
+    const raw = await askStory(ctx, root, project, chapterPrompt(project, chapter, previous), (note) => {
       job.message = note;
     });
+    const fitted = fitChapterText(raw, (chapter.outline && chapter.outline.maxWords) || 3000);
+    const content = fitted.text;
+    if (fitted.trimmed) job.message = '模型写超了字数，已按上限截断';
     const saved = await mutateProject(root, projectId, (draft) => {
       const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
       if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
@@ -1977,9 +2046,12 @@ async function startCompose(ctx, root, registry, body) {
     const fresh = await readProject(root, projectId);
     const target = fresh.chapters.find((entry) => entry.chapterId === chapterId);
     if (!target) throw httpError(500, '章节写入失败');
-    const content = await askStory(ctx, root, fresh, chapterPrompt(fresh, target, previous), (note) => {
+    const raw = await askStory(ctx, root, fresh, chapterPrompt(fresh, target, previous), (note) => {
       job.message = note;
     });
+    const fitted = fitChapterText(raw, (target.outline && target.outline.maxWords) || 3000);
+    const content = fitted.text;
+    if (fitted.trimmed) job.message = '模型写超了字数，已按上限截断';
 
     await mutateProject(root, projectId, (current) => {
       const entry = current.chapters.find((item) => item.chapterId === chapterId);
@@ -2087,6 +2159,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
   }
   if (method !== 'POST') throw httpError(405, '只支持 GET 与 POST');
   switch (path) {
+    case '/job/cancel':
+      return cancelJob(ctx, root, registry, body);
     case '/project/create':
       return createProject(ctx, root, body);
     case '/project/delete': {

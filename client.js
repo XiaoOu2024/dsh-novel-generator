@@ -1281,6 +1281,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               composing ? (job.message || t('正在自动推演…', "Deducing…")) : t('正在生成章节故事…', "Generating the chapter…"))
             : null,
           h('div', { className: 'dsn-spacer' }),
+          generating || composing
+            ? h('button', {
+              className: 'dsn-btn danger ghost',
+              type: 'button',
+              onClick: async () => {
+                try {
+                  await api('/job/cancel', { jobId: job.jobId });
+                  setJob((current) => ({ ...(current || {}), state: 'error', error: t('已手动停止', 'Stopped') }));
+                  notify(t('已请求停止生成', 'Generation stop requested'), 'success');
+                } catch (stopError) {
+                  notify(messageOf(stopError), 'error');
+                }
+              },
+            }, t('停止生成', "Stop"))
+            : null,
           h('button', { className: 'dsn-btn', type: 'button', disabled: !complete || saving || Boolean(generating || composing), onClick: () => submit(false) },
             saving ? t('保存中…', "Saving…") : t('保存', "Save")),
           h('button', {
