@@ -185,6 +185,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-input:focus,.dsn-select:focus,.dsn-textarea:focus{border-color:var(--dsw-alias-brand-primary)}
 .dsn-input.dsn-readonly{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:default}
 .dsn-input.dsn-readonly:focus{border-color:var(--dsw-alias-border-l1)}
+.dsn-input.dsn-input-invalid{border-color:var(--dsw-alias-state-warn-primary)}
 .dsn-path{display:flex;gap:6px}
 .dsn-list{display:flex;flex-direction:column;gap:8px}
 .dsn-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
@@ -425,7 +426,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
-    function ProjectsPage({ boot, workspace, onOpen, onReload, onEditModel }) {
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -451,17 +452,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [models]);
 
       const pickDirectory = useCallback(async () => {
-        if (!workspace || typeof workspace.pickDirectory !== 'function') {
-          setError(t('当前界面无法调用目录选择器，这个部署暂时不能创建作品', "The directory picker is unavailable here, so this deployment cannot create works."));
+        // Resolved at click time: the workspace service may activate after this
+        // plugin, so an instance captured in `apply` can come back undefined.
+        const ui = typeof resolveWorkspace === 'function' ? resolveWorkspace() : null;
+        if (!ui || typeof ui.pickDirectory !== 'function') {
+          setError(t('目录选择器还没就绪，请稍后再点一次「选择」', 'The directory picker is not ready yet — try "Select" again in a moment.'));
           return;
         }
         try {
-          const picked = await workspace.pickDirectory();
+          const picked = await ui.pickDirectory();
           if (picked) setCwd(picked);
         } catch (pickError) {
           setError(messageOf(pickError));
         }
-      }, [workspace]);
+      }, [resolveWorkspace]);
 
       const create = useCallback(async () => {
         setError('');
@@ -502,13 +506,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('label', { className: 'dsn-field' },
             h('span', { className: 'dsn-label' }, t('作品名称', "Title")),
             h('input', {
-              className: 'dsn-input',
+              className: `dsn-input${titleIssue ? ' dsn-input-invalid' : ''}`,
               value: title,
               placeholder: t('例如：长夜将尽', "e.g. The Long Night Ends"),
+              title: titleIssue || t('会成为工作目录下的文件夹名', "Becomes a folder name inside the working directory."),
               onChange: (event) => setTitle(event.target.value),
-            }),
-            h('span', { className: `dsn-hint${titleIssue ? ' warn' : ''}` },
-              titleIssue || t('会成为工作目录下的文件夹名', "Becomes a folder name inside the working directory."))),
+            })),
           h('label', { className: 'dsn-field' },
             h('span', { className: 'dsn-label' }, t('工作目录', "Working directory")),
             h('div', { className: 'dsn-path' },
@@ -557,7 +560,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onClick: create,
             }, busy ? t('创建中…', "Creating…") : t('创建作品并开会话', "Create work and open its session")))),
 
-        error ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error) : null,
+        error || titleIssue
+          ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error || titleIssue)
+          : null,
 
         h('div', { className: 'dsn-list' },
           boot.projects.length === 0
@@ -1654,7 +1659,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
     /* ------------------------------------------------------------ studio app */
 
-    function StudioApp({ workspace }) {
+    function StudioApp({ resolveWorkspace }) {
       // Subscribes every screen below to Settings → General → Language.
       useLocaleId();
       const [boot, setBoot] = useState(null);
@@ -1742,7 +1747,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               ? h('div', { className: 'dsn-scroll' },
                 h(ProjectsPage, {
                   boot,
-                  workspace,
+                  resolveWorkspace,
                   onOpen: openProject,
                   onReload: loadBoot,
                   onEditModel: setModelTarget,
@@ -1772,12 +1777,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           : null);
     }
 
-    function StudioOverlay({ workspace }) {
+    function StudioOverlay({ resolveWorkspace }) {
       const open = useOverlayOpen();
       if (!open) return null;
       // No backdrop-click close: leaving with unsaved chapter text goes through
       // the 关闭 button, which asks first.
-      return h('div', { className: 'dsn-overlay' }, h(StudioApp, { workspace }));
+      return h('div', { className: 'dsn-overlay' }, h(StudioApp, { resolveWorkspace }));
     }
 
     /* ---------------------------------------------------------------- apply */
@@ -1785,7 +1790,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     return {
       inject: ['slots'],
       apply(ctx) {
-        const uiWorkspace = ctx.get('uiWorkspace');
+        /**
+         * Read at use time, not at activation: this plugin may mount before the
+         * workspace UI that owns `uiWorkspace`, and a captured instance would
+         * then be undefined for the life of the page.
+         */
+        const resolveWorkspace = () => ctx.get('uiWorkspace') || null;
         // Settings → General → Language drives every string that goes through
         // the translator below; a host without the service stays Chinese.
         localeService = ctx.get('locale') || null;
@@ -1798,7 +1808,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           name: 'shell.overlay',
           id: 'dsh-novel-generator-studio',
           order: 40,
-        }, () => h(StudioOverlay, { workspace: uiWorkspace })));
+        }, () => h(StudioOverlay, { resolveWorkspace })));
       },
     };
   },
