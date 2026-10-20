@@ -11,7 +11,7 @@
  * UI and watch (or correct) the very same agent the generator drives.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -103,6 +103,79 @@ function titleProblem(title) {
 /** Folder holding one work's files, inside the chosen working directory. */
 function projectContentDir(project) {
   return join(project.cwd, safeSegment(project.title, '未命名作品'));
+}
+
+/** Ownership stamp written into the work folder, so delete never eats user data. */
+const MARKER_FILE = '.novel-generator.json';
+
+function markerFile(project) {
+  return join(projectContentDir(project), MARKER_FILE);
+}
+
+async function stampWorkFolder(project) {
+  try {
+    await mkdir(projectContentDir(project), { recursive: true });
+    await writeFile(markerFile(project), JSON.stringify({
+      projectId: project.projectId,
+      title: project.title,
+      createdAt: project.createdAt,
+    }, null, 2), 'utf8');
+  } catch {
+    // A folder that cannot be written simply has no stamp.
+  }
+}
+
+/** True when this project's folder carries this project's own stamp. */
+async function ownsWorkFolder(project) {
+  try {
+    const data = JSON.parse(await readFile(markerFile(project), 'utf8'));
+    return Boolean(data) && data.projectId === project.projectId;
+  } catch {
+    return false;
+  }
+}
+
+async function pathExists(target) {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reserve the work folder. An existing folder is reused only when it is empty
+ * or already belongs to this plugin for the same project; anything else is a
+ * name clash with the user's own files and is reported instead.
+ */
+async function reserveWorkFolder(project, projectId) {
+  const dir = projectContentDir(project);
+  await mkdir(dir, { recursive: true });
+  const entries = (await readdir(dir)).filter((name) => name !== MARKER_FILE);
+  if (entries.length === 0) return dir;
+  let owner = null;
+  try {
+    owner = JSON.parse(await readFile(join(dir, MARKER_FILE), 'utf8'));
+  } catch {
+    owner = null;
+  }
+  if (owner && owner.projectId === projectId) return dir;
+  throw httpError(409, `工作目录下已经有名为「${safeSegment(project.title, '未命名作品')}」的文件夹，请换一个作品名称`);
+}
+
+/** Remove the work folder only when it is provably this project's own. */
+async function discardWorkFolder(project) {
+  if (!project || !project.cwd) return null;
+  const dir = projectContentDir(project);
+  if (dir === project.cwd) return null;
+  if (!(await ownsWorkFolder(project))) return null;
+  try {
+    await rm(dir, { recursive: true, force: true });
+    return dir;
+  } catch {
+    return null;
+  }
 }
 
 /** Where one chapter lives inside the work's own folder. */
@@ -408,6 +481,7 @@ function strippedProject(project, unwritten) {
 /** Write every content file, then the parameter-only index. */
 async function persistProject(root, project) {
   const unwritten = new Set();
+  await stampWorkFolder(project);
   for (const chapter of project.chapters || []) {
     const ok = await exportChapter(project, chapter, chapter.content);
     if (!ok) unwritten.add(chapter.chapterId);
@@ -973,16 +1047,33 @@ async function bootstrap(ctx, root) {
     }
   }
   const projects = await listProjects(root);
-  // Repair projects created before sessions were placed in the sidebar group.
+  // Repair projects created before sessions were placed in the sidebar group,
+  // and stamp works made before folders carried an ownership mark.
   for (const project of projects) {
     try {
       await ensureWorkspace(ctx, project);
     } catch {
       // A missing directory or an older harness simply leaves the session as is.
     }
+    try {
+      // Stamp a folder that already exists; a work whose folder was never
+      // written (or was deleted on purpose) is left alone.
+      await stat(projectContentDir(project));
+      if (!(await ownsWorkFolder(project))) await stampWorkFolder(project);
+    } catch {
+      // An unreachable folder simply stays unstamped.
+    }
+    try {
+      if (!(await ownsWorkFolder(project)) && !(await pathExists(projectContentDir(project)))) {
+        // A work created before folders were materialised gets one now.
+        await persistProject(root, await readProject(root, project.projectId));
+      }
+    } catch {
+      // Best effort; the next save materialises it anyway.
+    }
   }
   return {
-    revision: '2026-10-20.15',
+    revision: '2026-10-20.17',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1021,6 +1112,16 @@ async function createProject(ctx, root, body) {
     }
     : null;
 
+  // Claim the work folder before anything else, so a name clash costs neither a
+  // session nor a half-written project.
+  const projectId = randomUUID();
+  try {
+    await reserveWorkFolder({ projectId, title, cwd }, projectId);
+  } catch (error) {
+    if (error && error.status) throw error;
+    throw httpError(400, `无法在工作目录下创建作品文件夹：${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const created = await controller.create(agentPreset === undefined ? { cwd } : { cwd, agentPreset });
   const sessionId = created && created.sessionId ? created.sessionId : null;
   let warning = null;
@@ -1035,7 +1136,7 @@ async function createProject(ctx, root, body) {
   const today = new Date();
   const origin = today.toISOString().slice(0, 10);
   const project = {
-    projectId: randomUUID(),
+    projectId,
     title,
     cwd,
     agentPreset: agentPreset || created.agentPreset || null,
@@ -1048,6 +1149,9 @@ async function createProject(ctx, root, body) {
     chapters: [],
   };
   await writeJson(projectFile(root, project.projectId), project);
+  // Write the stamp and 作品信息.md right away: the folder exists the moment the
+  // work does, instead of appearing on the first chapter.
+  await persistProject(root, project);
 
   // Put the session in a sidebar workspace instead of leaving it ungrouped.
   let workspace = null;
@@ -1556,24 +1660,17 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
     case '/project/delete': {
       const projectId = asText(body.projectId);
       if (projectId === '') throw httpError(400, '缺少 projectId');
-      // The work folder is this plugin's own output inside the chosen
-      // directory, so removing the work removes it too.
+      // Only a folder carrying this project's own stamp is removed: a folder
+      // the user already had under the same name is never touched.
       let workDir = null;
       try {
         const project = await readProject(root, projectId);
-        if (project.cwd) {
-          const folder = projectContentDir(project);
-          const relative = folder.slice(project.cwd.length).replace(/^[\\/]+/, '');
-          if (relative !== '') {
-            await rm(folder, { recursive: true, force: true });
-            workDir = folder;
-          }
-        }
+        workDir = await discardWorkFolder(project);
       } catch {
         // A work whose folder is already gone still gets its record removed.
       }
       await rm(join(projectsDir(root), projectId), { recursive: true, force: true });
-      return { removed: projectId, removedDir: workDir };
+      return { removed: projectId, removedDir: workDir, folderKept: workDir === null };
     }
     case '/project/timeline':
       return updateTimeline(root, body);
