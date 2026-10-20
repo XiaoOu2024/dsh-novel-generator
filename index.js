@@ -1073,7 +1073,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.18',
+    revision: '2026-10-20.19',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1349,15 +1349,22 @@ async function ensureWorkspace(ctx, project) {
   return workspace;
 }
 
-/** One snapshot per elapsed timeline threshold, derived from that period's chapters. */
-function snapshotDue(project, day) {
-  const snapshots = project.snapshots || [];
-  const last = snapshots[snapshots.length - 1];
+/**
+ * Whether a chapter ending at `day` earns an automatic snapshot.
+ *
+ * The rule ignores how many snapshots exist and which interval produced them:
+ * a point counts only when the chapter lands exactly on a multiple of the
+ * *current* interval, and the point one interval earlier is already covered
+ * (day 0 — the story's start — counts as covered). Changing the interval
+ * therefore moves the grid, and generation only continues along an unbroken
+ * chain rather than back-filling gaps by itself.
+ */
+function snapshotPointDue(project, day) {
   const unit = Math.max(1, project.timeline.unitDays || 30);
-  // Story time starts at day 0, so the first snapshot is due once the story has
-  // advanced one full unit from the origin rather than on the first chapter.
-  const since = last ? last.day : 0;
-  return day - since >= unit;
+  if (day <= 0 || day % unit !== 0) return false;
+  const previous = day - unit;
+  if (previous <= 0) return true;
+  return (project.snapshots || []).some((snapshot) => snapshot.day === previous);
 }
 
 /** Story day where the next chapter continues: the end of the last chapter. */
@@ -1385,8 +1392,15 @@ function withTimelineFacts(project) {
       unitDays,
       latestSnapshotDay,
       storyEnd: lastChapterEnd(project),
-      nextSnapshotDay: latestSnapshotDay + unitDays,
+      // The next point on the *current* interval's grid, not "last + unit":
+      // after an interval change the grid moves under the existing snapshots.
+      nextSnapshotDay: Math.floor(latestSnapshotDay / unitDays) * unitDays + unitDays,
       snapshotDays: snapshots.map((snapshot) => snapshot.day),
+      // Every grid point up to the story's end, so the Client can mark them.
+      gridDays: Array.from(
+        { length: Math.max(0, Math.floor(lastChapterEnd(project) / unitDays)) },
+        (_, index) => (index + 1) * unitDays,
+      ),
     },
   };
 }
@@ -1465,7 +1479,7 @@ function startGenerate(ctx, root, registry, body) {
     await exportChapter(project, saved, content);
     const window = chapterWindow(project, chapter);
     let snapshotJobId = null;
-    if (snapshotDue(project, window.end)) {
+    if (snapshotPointDue(project, window.end)) {
       const snapshotJob = registerSnapshot(ctx, root, registry, projectId, window.end);
       snapshotJobId = snapshotJob.jobId;
     }
@@ -1582,7 +1596,7 @@ function startCompose(ctx, root, registry, body) {
     if (written) await exportChapter(after, written, content);
     const window = chapterWindow(after, target);
     let snapshotJobId = null;
-    if (snapshotDue(after, window.end)) {
+    if (snapshotPointDue(after, window.end)) {
       snapshotJobId = registerSnapshot(ctx, root, registry, projectId, window.end).jobId;
     }
     return {

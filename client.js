@@ -748,13 +748,16 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const snapshot = snapshotAt(detail, day);
       const chapters = detail.chapters || [];
-      // Two moments offer the button: the story has reached the next snapshot
-      // point (a new snapshot), or the slider sits on the newest snapshot
-      // (regenerate it after editing the chapters behind it).
-      const atLatestSnapshot = latest > 0 && day === latest;
+      // The button belongs on the interval grid: the cursor must sit exactly on
+      // a multiple of the current interval. There it either fills a missing
+      // snapshot or replaces the one already written for that day.
+      const onGridPoint = unitDays >= 1 && day > 0 && day % unitDays === 0;
+      const hasSnapshotHere = (detail.snapshots || []).some((entry) => entry.day === day);
       const canSnapshot = chapters.length > 0
-        && ((storyEnd >= nextDay && day >= nextDay) || atLatestSnapshot);
-      const snapshotLabel = atLatestSnapshot
+        && onGridPoint
+        && (hasSnapshotHere || day <= storyEnd);
+      const regenerating = hasSnapshotHere;
+      const snapshotLabel = regenerating
         ? t('重新生成快照 · 第 {day} 天', 'Regenerate snapshot · day {day}', { day })
         : t('生成世界快照 · 第 {day} 天', 'Generate snapshot · day {day}', { day });
       const nearest = useMemo(() => {
@@ -773,18 +776,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const askSnapshot = useCallback(() => {
         requestConfirm({
-          title: atLatestSnapshot
+          title: regenerating
             ? t('是否重新生成第 {day} 天的世界快照？', 'Regenerate the world snapshot for day {day}?', { day })
             : t('是否为当前时间生成世界快照？', "Generate a world snapshot for this point in time?"),
-          text: atLatestSnapshot
+          text: regenerating
             ? t('会以第 {day} 天之前那版快照和这段时间的章节梗概重写这一天，原有快照被替换。', 'It rewrites day {day} from the snapshot before it and the synopses of this stretch; the existing snapshot is replaced.', { day })
             : t('将为第 {day} 天生成一份世界快照：以上一份快照和这段时间的章节梗概为依据，时间线会延伸到这一天。', 'A world snapshot will be generated for day {day} from the previous snapshot and the synopses of this stretch; the timeline extends to that day.', { day }),
-          confirmLabel: atLatestSnapshot
+          confirmLabel: regenerating
             ? t('重新生成', 'Regenerate')
             : t('生成快照', "Generate snapshot"),
           action: () => onRefreshSnapshot(day),
         });
-      }, [requestConfirm, day, detail, onRefreshSnapshot, atLatestSnapshot]);
+      }, [requestConfirm, day, detail, onRefreshSnapshot, regenerating]);
 
       return h(React.Fragment, null,
         h('div', { className: 'dsn-pagehead' },
