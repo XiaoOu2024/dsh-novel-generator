@@ -12,7 +12,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 export const name = 'dsh-novel-generator';
@@ -859,7 +859,7 @@ async function rebindSession(ctx, root, project) {
     draft.sessionId = sessionId;
   });
   try {
-    await ensureWorkspace(ctx, project);
+    await ensureWorkspace(ctx, root, project);
   } catch {
     // Grouping is cosmetic; the session works either way.
   }
@@ -1215,9 +1215,11 @@ async function bootstrap(ctx, root) {
   const projects = await listProjects(root);
   // Repair projects created before sessions were placed in the sidebar group,
   // and stamp works made before folders carried an ownership mark.
+  const workspaceRegistry = ctx.get('workspaceRegistry');
+  if (workspaceRegistry) tidyWorkspaceGroups(workspaceRegistry).catch(() => {});
   for (const project of projects) {
     try {
-      await ensureWorkspace(ctx, project);
+      await ensureWorkspace(ctx, root, project);
     } catch {
       // A missing directory or an older harness simply leaves the session as is.
     }
@@ -1239,7 +1241,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.35',
+    revision: '2026-10-20.39',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1322,7 +1324,7 @@ async function createProject(ctx, root, body) {
   // Put the session in a sidebar workspace instead of leaving it ungrouped.
   let workspace = null;
   try {
-    workspace = await ensureWorkspace(ctx, project);
+    workspace = await ensureWorkspace(ctx, root, project);
   } catch (error) {
     const message = `会话已创建，但没能放进「${WORKSPACE_TITLE}」分组：${error instanceof Error ? error.message : String(error)}`;
     warning = warning === null ? message : `${warning} ${message}`;
@@ -1489,14 +1491,18 @@ const WORKSPACE_TITLE = '小说工坊';
 const ensuredWorkspaces = new Set();
 
 /**
- * Put a project's session under a sidebar workspace instead of 未分组: reuse the
- * workspace that owns the project's directory, otherwise create one titled
- * 小说工坊 for it. Idempotent, so bootstrap can repair older projects too.
+ * Put a project's session under a sidebar workspace titled 小说工坊.
+ *
+ * DSH groups sessions by directory: a workspace owns one canonical path, and a
+ * session only shows under the workspace matching its cwd. Works in different
+ * directories therefore need different groups, so each group is titled with its
+ * directory to keep them apart.
  */
-async function ensureWorkspace(ctx, project) {
+async function ensureWorkspace(ctx, root, project) {
   const registry = ctx.get('workspaceRegistry');
   if (!registry || !project || !project.sessionId || !project.cwd) return null;
   if (ensuredWorkspaces.has(project.projectId)) return null;
+
   const attached = registry.list()
     .some((workspace) => Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(project.sessionId));
   if (attached) {
@@ -1509,10 +1515,44 @@ async function ensureWorkspace(ctx, project) {
   } catch {
     workspace = undefined;
   }
-  if (!workspace) workspace = await registry.create(project.cwd, WORKSPACE_TITLE);
+  if (!workspace) {
+    const label = project.cwd.split(/[\\/]/).filter(Boolean).pop() || '根目录';
+    workspace = await registry.create(project.cwd, `${WORKSPACE_TITLE} · ${label}`);
+  }
   await workspace.attachSession(project.sessionId);
   ensuredWorkspaces.add(project.projectId);
   return workspace;
+}
+
+/** Remove empty groups this plugin leaves behind; never touches a used one. */
+async function tidyWorkspaceGroups(registry) {
+  for (const workspace of registry.list()) {
+    if (!workspace.title.startsWith(WORKSPACE_TITLE)) continue;
+    const sessions = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : [];
+    if (sessions.length === 0) {
+      try {
+        await registry.delete(workspace.id);
+      } catch {
+        // Leaving one empty group is harmless.
+      }
+      continue;
+    }
+    // A group rooted in the OS temp directory can only be a leftover from a
+    // throwaway test work: archive what it holds, then drop the group.
+    if (!workspace.path.toLowerCase().startsWith(tmpdir().toLowerCase())) continue;
+    for (const sessionId of sessions) {
+      try {
+        await registry.archiveSession(sessionId, { stopActivity: true });
+      } catch {
+        // An active session stays; the group stays with it.
+      }
+    }
+    try {
+      await registry.delete(workspace.id);
+    } catch {
+      // The group stays visible if it could not be removed.
+    }
+  }
 }
 
 /**
