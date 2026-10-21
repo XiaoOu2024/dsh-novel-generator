@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import path from 'node:path';
 
 export const name = 'dsh-novel-generator';
 export const inject = ['webServer'];
@@ -903,6 +904,27 @@ async function rebindSession(ctx, root, project) {
   return { controller, agent: result.agent };
 }
 
+/**
+ * Keep the work's Session on the work's model.
+ *
+ * A session remembers the model it was last given, so a rebuilt session — or a
+ * switch that quietly failed on an archived one — can leave it on a different
+ * model than the work records. The pairing is re-applied whenever they differ.
+ */
+const syncedSessionModels = new Map();
+
+async function syncSessionModel(controller, project) {
+  if (!project || !project.sessionId || !project.model || !project.model.provider || !project.model.model) return;
+  const key = `${project.model.provider}/${project.model.model}`;
+  if (syncedSessionModels.get(project.sessionId) === key) return;
+  try {
+    await controller.selectModel({ sessionId: project.sessionId, ...project.model });
+    syncedSessionModels.set(project.sessionId, key);
+  } catch {
+    // The work still records the model; the next job tries again.
+  }
+}
+
 /** Resolve (or resume) the ordinary Agent that owns one project's Session. */
 async function resolveAgent(ctx, root, project, onNote) {
   const controller = ctx.get('sessionController');
@@ -933,7 +955,10 @@ async function resolveAgent(ctx, root, project, onNote) {
   } catch {
     result = null;
   }
-  if (result && result.agent) return { controller, agent: result.agent };
+  if (result && result.agent) {
+    await syncSessionModel(controller, project);
+    return { controller, agent: result.agent };
+  }
   // The old session is gone: rebuild instead of failing every later call.
   const rebuilt = await rebindSession(ctx, root, project);
   if (onNote) onNote('原作品会话已不存在，已自动新建一个会话继续');
@@ -1364,7 +1389,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-20.45',
+    revision: '2026-10-21.2',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1517,6 +1542,236 @@ async function updateModel(ctx, root, body) {
     return summarize(draft);
   });
   return { project: projectSummary, warning };
+}
+
+/**
+ * Move one work's folder to another directory and repoint the work at it.
+ *
+ * The folder is the work: chapter text, outlines and snapshots travel with it.
+ * A destination that already holds someone else's files is refused, exactly as
+ * creation refuses it.
+ */
+async function moveProject(ctx, root, body) {
+  const projectId = asText(body.projectId);
+  if (projectId === '') throw httpError(400, '缺少 projectId');
+  const cwd = asText(body.cwd);
+  if (cwd === '') throw httpError(400, '请选择新的工作目录');
+  try {
+    const info = await stat(cwd);
+    if (!info.isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw httpError(400, '新的工作目录不存在或不是文件夹');
+  }
+  const project = await readProject(root, projectId);
+  if (path.resolve(cwd) === path.resolve(project.cwd)) {
+    throw httpError(409, '新旧工作目录相同，无需移动');
+  }
+  const from = projectContentDir(project);
+  const to = join(cwd, safeSegment(project.title, '未命名作品'));
+  const claimed = await reserveWorkFolder({ projectId, title: project.title, cwd }, projectId);
+  if (path.resolve(claimed) !== path.resolve(to)) {
+    throw httpError(409, `目标目录下已经有名为「${basename(to)}」的文件夹，请先在那边清空或删掉`);
+  }
+  if (await pathExists(from)) {
+    await moveTree(from, to);
+  }
+  const moved = await mutateProject(root, projectId, (draft) => {
+    draft.cwd = cwd;
+    draft.updatedAt = Date.now();
+    return summarize(draft);
+  });
+  await persistProject(root, await readProject(root, projectId));
+  return { project: moved, from, to };
+}
+
+/** Copy-then-delete move that also works across drives. */
+async function moveTree(from, to) {
+  try {
+    await rename(from, to);
+    return;
+  } catch {
+    // Cross-device rename fails; fall through to a copy.
+  }
+  await mkdir(to, { recursive: true });
+  for (const entry of await readdir(from, { withFileTypes: true })) {
+    const source = join(from, entry.name);
+    const target = join(to, entry.name);
+    if (entry.isDirectory()) await moveTree(source, target);
+    else await rename(source, target).catch(async () => {
+      await writeFile(target, await readFile(source));
+      await unlink(source);
+    });
+  }
+  await rm(from, { recursive: true, force: true });
+}
+
+/**
+ * Adopt a work folder that lives outside the plugin's index — the manual
+ * migration path, and the way back from a lost `.dsh/novel-studio` data
+ * directory. Chapters, outlines and snapshots are read back from the files.
+ */
+async function importProject(ctx, root, body) {
+  const cwd = asText(body.cwd);
+  const folder = asText(body.folder);
+  if (cwd === '' || folder === '') throw httpError(400, '请填写工作目录与作品文件夹名');
+  const dir = join(cwd, folder);
+  let info;
+  try {
+    info = await stat(dir);
+    if (!info.isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw httpError(400, `找不到作品文件夹：${dir}`);
+  }
+  const title = folder;
+  const titleIssue = titleProblem(title);
+  if (titleIssue !== null) throw httpError(400, titleIssue);
+
+  const existing = (await listProjects(root)).find((entry) => path.resolve(entry.cwd) === path.resolve(cwd) && entry.title === title);
+  if (existing) throw httpError(409, '这部作品已经导入过了');
+
+  const files = (await readdir(dir).catch(() => [])).filter((name) => name.endsWith('.md'));
+  let subtitle = '';
+  try {
+    const infoText = await readFile(join(dir, '作品信息.md'), 'utf8');
+    const match = infoText.match(/#\s*作品[：:]\s*(.+)/u);
+    if (match) subtitle = match[1].trim();
+  } catch {
+    // No 作品信息.md: the folder name is the title.
+  }
+
+  const chapters = [];
+  const outlineDir = join(dir, '章节大纲');
+  let outlineNames = [];
+  try {
+    outlineNames = (await readdir(outlineDir)).filter((name) => name.endsWith('.md'));
+  } catch {
+    outlineNames = [];
+  }
+  let runningStart = 0;
+  const sorted = outlineNames
+    .map((name) => ({ name, index: Number((name.match(/第(\d+)章/u) || [])[1] || 0) }))
+    .filter((entry) => entry.index > 0)
+    .sort((a, b) => a.index - b.index);
+  for (const entry of sorted) {
+    let text = '';
+    try {
+      text = await readFile(join(outlineDir, entry.name), 'utf8');
+    } catch {
+      continue;
+    }
+    const heading = (text.match(/^#\s*第\s*\d+\s*章\s*(.*)$/mu) || [])[1] || '';
+    const span = text.match(/故事时间：第\s*(\d+)\s*→\s*(\d+)\s*天/u);
+    const words = text.match(/字数要求：\s*(\d+)\s*[–-]\s*(\d+)/u);
+    const synopsisMin = text.match(/梗概最低字数：\s*(\d+)/u);
+    const synopsis = (text.split('## 故事梗概')[1] || '').trim();
+    const startDay = span ? Number(span[1]) : runningStart;
+    const endDay = span ? Number(span[2]) : startDay + 30;
+    runningStart = endDay;
+    const chapterTitle = heading.trim() || `第 ${entry.index} 章`;
+    let content = '';
+    const bodyName = files.find((name) => name.startsWith(`第${String(entry.index).padStart(2, '0')}章`));
+    if (bodyName) {
+      try {
+        content = await readFile(join(dir, bodyName), 'utf8');
+      } catch {
+        content = '';
+      }
+    }
+    chapters.push({
+      chapterId: randomUUID(),
+      index: entry.index - 1,
+      title: chapterTitle,
+      startDay,
+      durationDays: Math.max(1, endDay - startDay),
+      outline: {
+        synopsis,
+        synopsisMinChars: synopsisMin ? Number(synopsisMin[1]) : 100,
+        durationDays: Math.max(1, endDay - startDay),
+        minWords: words ? Number(words[1]) : 1200,
+        maxWords: words ? Number(words[2]) : 3500,
+        savedAt: Date.now(),
+      },
+      content,
+      wordCount: wordCount(content),
+      status: content.trim() === '' ? 'outlined' : 'generated',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      generatedAt: content.trim() === '' ? null : Date.now(),
+    });
+  }
+
+  const snapshots = [];
+  const snapshotDir = join(dir, '世界快照');
+  let snapshotNames = [];
+  try {
+    snapshotNames = (await readdir(snapshotDir)).filter((name) => name.endsWith('.json'));
+  } catch {
+    snapshotNames = [];
+  }
+  for (const name of snapshotNames.sort()) {
+    try {
+      const data = JSON.parse(await readFile(join(snapshotDir, name), 'utf8'));
+      const day = Number((name.match(/第(\d+)天/u) || [])[1] || 0);
+      const normalized = normalizeSnapshot(data);
+      snapshots.push({
+        snapshotId: randomUUID(),
+        day,
+        createdAt: Date.now(),
+        unitDays: Number(data.unitDays) || 30,
+        ...normalized,
+      });
+    } catch {
+      // A malformed sidecar is skipped, not fatal.
+    }
+  }
+  snapshots.sort((a, b) => a.day - b.day);
+
+  const unitDays = snapshots.length ? snapshots[snapshots.length - 1].unitDays : 30;
+  const project = {
+    projectId: randomUUID(),
+    title,
+    cwd,
+    agentPreset: null,
+    model: null,
+    sessionId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    timeline: {
+      unitDays,
+      cursor: Math.max(lastChapterEnd({ chapters }), snapshots.length ? snapshots[snapshots.length - 1].day : 0),
+      origin: new Date().toISOString().slice(0, 10),
+      cursorUnit: 'day',
+    },
+    chapters,
+    snapshots,
+  };
+  await writeJson(projectFile(root, project.projectId), project);
+  await persistProject(root, project);
+  const created = await createSessionFor(ctx, root, project);
+  return {
+    project: summarize(await readProject(root, project.projectId)),
+    imported: { chapters: chapters.length, snapshots: snapshots.length, subtitle },
+    sessionId: created,
+  };
+}
+
+/** Give a freshly imported work its own session (best effort). */
+async function createSessionFor(ctx, root, project) {
+  const controller = ctx.get('sessionController');
+  if (!controller) return null;
+  try {
+    const created = await controller.create({ cwd: project.cwd });
+    const sessionId = created && created.sessionId ? created.sessionId : null;
+    if (!sessionId) return null;
+    project.sessionId = sessionId;
+    await mutateProject(root, project.projectId, (draft) => {
+      draft.sessionId = sessionId;
+    });
+    await ensureWorkspace(ctx, root, project);
+    return sessionId;
+  } catch {
+    return null;
+  }
 }
 
 async function updateTimeline(root, body) {
@@ -2187,6 +2442,10 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return updateModel(ctx, root, body);
     case '/project/rebind':
       return rebindProject(ctx, root, body);
+    case '/project/move':
+      return moveProject(ctx, root, body);
+    case '/project/import':
+      return importProject(ctx, root, body);
     case '/outline/save':
       return saveOutline(root, body);
     case '/chapter/save':

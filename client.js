@@ -187,6 +187,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-input.dsn-readonly:focus{border-color:var(--dsw-alias-border-l1)}
 .dsn-input.dsn-input-invalid{border-color:var(--dsw-alias-state-warn-primary)}
 .dsn-path{display:flex;gap:6px}
+.dsn-import{display:flex;align-items:center;gap:10px;margin:2px 0 12px}
 .dsn-list{display:flex;flex-direction:column;gap:8px}
 .dsn-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer}
@@ -515,6 +516,65 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         }
       }, [onReload]);
 
+      /** Move a work's folder to another directory. */
+      const moveWork = useCallback(async (project) => {
+        const ui = typeof resolveWorkspace === 'function' ? resolveWorkspace() : null;
+        if (!ui || typeof ui.pickDirectory !== 'function') {
+          setError(t('目录选择器还没就绪，请稍后再试', 'The directory picker is not ready yet — try again in a moment.'));
+          return;
+        }
+        let picked = '';
+        try {
+          picked = (await ui.pickDirectory()) || '';
+        } catch (pickError) {
+          setError(messageOf(pickError));
+          return;
+        }
+        if (!picked) return;
+        if (!window.confirm(t('把「{title}」整个文件夹移到 {cwd} 吗？正文、梗概、快照会一起搬过去。', 'Move the whole “{title}” folder to {cwd}? Chapters, outlines and snapshots travel with it.', { title: project.title, cwd: picked }))) return;
+        try {
+          await api('/project/move', { projectId: project.projectId, cwd: picked });
+          await onReload();
+        } catch (moveError) {
+          setError(messageOf(moveError));
+        }
+      }, [resolveWorkspace, onReload]);
+
+      /** Adopt an existing work folder that the plugin does not know about. */
+      const importWork = useCallback(async () => {
+        const ui = typeof resolveWorkspace === 'function' ? resolveWorkspace() : null;
+        if (!ui || typeof ui.pickDirectory !== 'function') {
+          setError(t('目录选择器还没就绪，请稍后再试', 'The directory picker is not ready yet — try again in a moment.'));
+          return;
+        }
+        let picked = '';
+        try {
+          picked = (await ui.pickDirectory()) || '';
+        } catch (pickError) {
+          setError(messageOf(pickError));
+          return;
+        }
+        if (!picked) return;
+        const parts = picked.split(/[\\/]+/).filter(Boolean);
+        const folder = parts.pop() || '';
+        const parent = parts.join('\\');
+        if (!folder || !parent) {
+          setError(t('请选择作品文件夹本身，而不是磁盘根目录', 'Pick the work folder itself, not a drive root.'));
+          return;
+        }
+        try {
+          const result = await api('/project/import', { cwd: parent, folder });
+          await onReload();
+          setError(t('已导入「{title}」：{chapters} 章、{snapshots} 份快照', 'Imported “{title}”: {chapters} chapters, {snapshots} snapshots', {
+            title: result.project.title,
+            chapters: result.imported.chapters,
+            snapshots: result.imported.snapshots,
+          }));
+        } catch (importError) {
+          setError(messageOf(importError));
+        }
+      }, [resolveWorkspace, onReload]);
+
       return h('div', { className: 'dsn-projects' },
         h('div', { className: 'dsn-create' },
           h('label', { className: 'dsn-field' },
@@ -574,6 +634,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onClick: create,
             }, busy ? t('创建中…', "Creating…") : t('创建作品并开会话', "Create work and open its session")))),
 
+        h('div', { className: 'dsn-import' },
+          h('button', {
+            className: 'dsn-btn ghost',
+            type: 'button',
+            title: t('把别处已有的作品文件夹接进来（章节、梗概、快照会从文件读回）', 'Adopt an existing work folder: chapters, outlines and snapshots are read back from the files'),
+            onClick: importWork,
+          }, t('导入已有作品…', "Import a work…")),
+          h('span', { className: 'dsn-hint' }, t('选择那个作品文件夹本身（含「作品信息.md」的目录）', 'Pick the work folder itself — the one holding 作品信息.md'))),
+
         error ? h('div', { className: 'dsn-error', style: { margin: 0 } }, error) : null,
 
         h('div', { className: 'dsn-list' },
@@ -617,6 +686,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 }
               },
             }, t('重建会话', "New session")),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('把这个作品的文件夹搬到别的工作目录', 'Move this work’s folder to another working directory'),
+              onClick: (event) => {
+                event.stopPropagation();
+                moveWork(project);
+              },
+            }, t('改目录', "Move")),
             h('button', {
               className: 'dsn-btn danger ghost',
               type: 'button',
