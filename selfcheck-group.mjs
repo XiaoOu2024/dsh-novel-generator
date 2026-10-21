@@ -1,4 +1,4 @@
-const BASE = 'http://127.0.0.1:3080/dsh-novel-studio/api';
+const BASE = 'http://127.0.0.1:3080/dsh-novel-generator/api';
 
 async function call(path, body) {
   const res = await fetch(BASE + path, {
