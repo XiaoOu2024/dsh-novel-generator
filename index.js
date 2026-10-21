@@ -1389,7 +1389,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-21.2',
+    revision: '2026-10-21.3',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2114,8 +2114,15 @@ function registerSnapshot(ctx, root, registry, projectId, targetDay) {
 }
 
 /** Wipe every snapshot (and its files) so the work can be rebuilt from day 1. */
-function startSnapshotReset(ctx, root, registry, body) {
+async function startSnapshotReset(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
+  // Validate before queueing, like the other job routes: an unknown work must
+  // come back as a plain 404 instead of a job that fails a second later.
+  const preview = await readProject(root, projectId);
+  const previewUnit = Math.max(1, preview.timeline.unitDays || 30);
+  if (Math.floor(lastChapterEnd(preview) / previewUnit) * previewUnit < previewUnit) {
+    throw httpError(409, '故事还不到一个快照间隔，没有可重建的快照');
+  }
   return startJob(registry, { kind: 'snapshot-reset', projectId }, async (job) => {
     const project = await readProject(root, projectId);
     const unit = Math.max(1, project.timeline.unitDays || 30);
