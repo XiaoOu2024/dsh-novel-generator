@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.16',
+    revision: '2026-10-27.17',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2333,6 +2333,36 @@ function registerSnapshot(ctx, root, registry, projectId, targetDay) {
       const project = await readProject(root, projectId);
       const base = (project.snapshots || []).filter((snapshot) => snapshot.day < point).pop() || null;
       const chapters = chaptersForPoint(project, base ? base.day : 0, point);
+      // A point whose stretch holds no chapter is a blank update: carry the
+      // previous snapshot forward verbatim instead of asking the model to invent
+      // a world out of nothing — that invented text would then feed every later
+      // chapter. No material, no call.
+      if (chapters.length === 0) {
+        const carried = {
+          snapshotId: randomUUID(),
+          day: point,
+          createdAt: Date.now(),
+          unitDays: unit,
+          world: (base && base.world) || '',
+          characters: (base && base.characters) || [],
+          factions: (base && base.factions) || [],
+          relations: (base && base.relations) || [],
+          items: (base && base.items) || [],
+          events: (base && base.events) || [],
+          summary: base
+            ? `第 ${base.day} 天至第 ${point} 天之间没有已写章节，沿用上一版设定。`
+            : `第 ${point} 天之前还没有已写章节。`,
+        };
+        await mutateProject(root, projectId, (draft) => {
+          draft.snapshots = (draft.snapshots || []).filter((entry) => entry.day !== point);
+          draft.snapshots.push(carried);
+          draft.snapshots.sort((a, b) => a.day - b.day);
+          return carried;
+        });
+        await exportSnapshot(project, carried);
+        made.push(point);
+        continue;
+      }
       job.message = `正在生成第 ${point} 天的世界快照（第 ${made.length + 1}/${points.length} 份，目标第 ${target} 天）`;
       const reply = await askAgent(ctx, root, project, snapshotPrompt(project, base, chapters, point), (note) => {
         job.message = note;
