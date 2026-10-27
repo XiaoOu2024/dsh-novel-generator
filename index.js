@@ -1255,6 +1255,34 @@ function deducePrompt(project, chapter) {
   return lines.join('\n');
 }
 
+/**
+ * Ask the model to rewrite one chapter's text according to a note.
+ *
+ * The current text is given in full (the Client sends the version on screen, so
+ * unsaved edits are included), and the reply is the whole revised chapter — not a
+ * patch and not commentary.
+ */
+function revisePrompt(project, chapter, currentText, instruction) {
+  const span = chapterWindow(project, chapter);
+  const lines = [];
+  lines.push('你是这部小说的修订者。下面是本章现有正文，以及作者给出的修改意见。');
+  lines.push('请按修改意见重写这一章，输出修订后的**完整正文**：不要解释、不要列出改动点、不要加标题行。');
+  lines.push('');
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
+  lines.push('');
+  lines.push('【现有正文】');
+  lines.push(currentText);
+  lines.push('');
+  lines.push('【修改意见】');
+  lines.push(instruction);
+  lines.push('');
+  lines.push('【要求】');
+  lines.push('- 只改需要按意见改的地方，保持原有的叙事人称、语气和已经成立的情节；没有被意见推翻的段落尽量保留。');
+  lines.push('- 输出必须是完整的一章，从开头到结尾，不能只给片段或省略号。');
+  lines.push('- 不要调用任何工具，不要反问，不要输出计划或步骤说明。');
+  return lines.join('\n');
+}
+
 function snapshotPrompt(project, previous, chapters, pointDay) {
   const lines = [];
   lines.push(`你是这部小说的世界观维护者。当前要产出第 ${pointDay} 天的世界快照。`);
@@ -1428,7 +1456,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.6',
+    revision: '2026-10-27.8',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2219,6 +2247,46 @@ async function startSnapshotReset(ctx, root, registry, body) {
   });
 }
 
+/**
+ * Revise a chapter's text from a note, without saving it.
+ *
+ * The Client keeps the result in the editor as an unsaved draft, so a rewrite
+ * never replaces text the author has not looked at. Both inputs are required:
+ * there is nothing to revise without text, and nothing to do without a note.
+ */
+async function startRevise(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const chapterId = asText(body.chapterId);
+  const instruction = asText(body.instruction);
+  const draft = typeof body.content === 'string' ? body.content : '';
+  if (draft.trim() === '') throw httpError(400, '这一章还没有正文，先写或先生成再让 AI 修改');
+  if (instruction === '') throw httpError(400, '请先写清修改意见');
+  const preview = await readProject(root, projectId);
+  const claimed = preview.chapters.find((entry) => entry.chapterId === chapterId);
+  if (!claimed) throw httpError(404, `章节不存在: ${chapterId}`);
+  return startJob(registry, { kind: 'revise', projectId, chapterId }, async (job) => {
+    const project = await readProject(root, projectId);
+    const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
+    if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
+    job.message = '正在按修改意见重写本章';
+    const raw = await askStory(ctx, root, project, revisePrompt(project, chapter, draft, instruction), (note) => {
+      job.message = note;
+    });
+    // Keep the author's own length: never cut below what they already had.
+    const limit = Math.max(
+      (chapter.outline && chapter.outline.maxWords) || 3000,
+      Math.round(wordCount(draft) * 1.3),
+    );
+    const fitted = fitChapterText(raw, limit);
+    job.message = fitted.trimmed ? '模型写超了字数，已按上限截断' : '完成';
+    return {
+      content: fitted.text,
+      wordCount: wordCount(fitted.text),
+      trimmed: fitted.trimmed,
+    };
+  });
+}
+
 async function startGenerate(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
@@ -2528,6 +2596,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return saveChapter(root, body);
     case '/generate':
       return startGenerate(ctx, root, registry, body);
+    case '/chapter/revise':
+      return startRevise(ctx, root, registry, body);
     case '/compose':
       return startCompose(ctx, root, registry, body);
     case '/deduce':

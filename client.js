@@ -1128,7 +1128,46 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
      * out of the page — back, next chapter, the outline, another project, or
      * closing the studio — can ask about unsaved text first.
      */
-    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter }) {
+    /**
+     * Ask the model to rewrite the chapter from a note. The result lands back in
+     * the editor as an unsaved draft, so nothing is overwritten unseen.
+     */
+    function ReviseDialog({ chapter, text, busy, error, onCancel, onConfirm }) {
+      const [instruction, setInstruction] = useState('');
+      const ready = instruction.trim() !== '' && String(text || '').trim() !== '';
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(560px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('AI 修改本章', 'Revise this chapter with AI')),
+            h('div', { className: 'dsn-sub' }, chapter ? t('第 {n} 章 · {title}', 'Chapter {n} · {title}', { n: chapter.index + 1, title: chapter.title || t('未命名', 'Untitled') }) : ''),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span4' },
+              h('span', { className: 'dsn-label' }, t('修改意见（必填）', 'What to change (required)')),
+              h('textarea', {
+                className: 'dsn-textarea',
+                style: { minHeight: '140px' },
+                value: instruction,
+                placeholder: t('例如：把第三章那段打斗写得更克制，减少形容词；结尾补一句主角的心理活动。', 'e.g. Tone down the fight scene, use fewer adjectives, and end on the protagonist’s inner thought.'),
+                onChange: (event) => setInstruction(event.target.value),
+              })),
+            String(text || '').trim() === ''
+              ? h('div', { className: 'dsn-hint warn span4' }, t('这一章还没有正文，先写或先生成，再让 AI 修改。', 'This chapter has no text yet — write or generate it before revising.'))
+              : h('div', { className: 'dsn-hint span4' }, t('AI 会按意见重写整章，结果放进编辑区但不自动保存；你确认后再点「保存」。', 'The whole chapter is rewritten from your note. The result goes into the editor unsaved — review it, then press Save.')),
+            error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', 'Cancel')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy || !ready,
+              onClick: () => onConfirm(instruction.trim()),
+            }, busy ? t('修改中…', 'Revising…') : t('确认修改', 'Revise')))));
+    }
+
+    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter, onRevise }) {
       const words = countWords(text);
       const window = chapter ? chapterWindow(detail, chapter) : null;
 
@@ -1170,6 +1209,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               h('div', { className: 'dsn-muted' },
                 t('{words} 字{req}', '{words} words{req}', { words, req: chapter.outline ? t(' · 大纲要求 {min}–{max} 字', ' · outline asks for {min}–{max} words', { min: chapter.outline.minWords, max: chapter.outline.maxWords }) : '' })),
               h('div', { className: 'dsn-spacer' }),
+              h('button', {
+                className: 'dsn-btn',
+                type: 'button',
+                disabled: saving || String(text || '').trim() === '',
+                title: String(text || '').trim() === ''
+                  ? t('这一章还没有正文，先写或先生成', 'No text yet — write or generate the chapter first')
+                  : t('把本章正文和修改意见交给 AI 重写', 'Send the chapter and a note to the model for a rewrite'),
+                onClick: onRevise,
+              }, t('AI 修改', 'AI revise')),
               h('button', { className: 'dsn-btn primary', type: 'button', disabled: saving, onClick: onSave },
                 saving ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
@@ -1685,6 +1733,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         return () => onBusyChange(null);
       }, [busy ? busy.label : null, busy ? busy.message : null, onBusyChange]);
       const [dialogOpen, setDialogOpen] = useState(false);
+      const [reviseOpen, setReviseOpen] = useState(false);
+      const [reviseError, setReviseError] = useState('');
+      const [reviseJob, setReviseJob] = useJob();
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
@@ -1732,9 +1783,58 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         }
       }, [chapter, detail.projectId, text, onReload, notify]);
 
+      /** Send the chapter and a note to the model; the reply becomes a draft. */
+      const startRevise = useCallback(async (instruction) => {
+        if (!chapter) return;
+        if (String(text || '').trim() === '') {
+          setReviseError(t('这一章还没有正文，先写或先生成再让 AI 修改', 'This chapter has no text yet — write or generate it before revising.'));
+          return;
+        }
+        if (String(instruction || '').trim() === '') {
+          setReviseError(t('请先写清修改意见', 'Write what should change first.'));
+          return;
+        }
+        setReviseError('');
+        try {
+          const started = await api('/chapter/revise', {
+            projectId: detail.projectId,
+            chapterId: chapter.chapterId,
+            instruction: String(instruction).trim(),
+            content: text,
+          });
+          setReviseJob(started);
+        } catch (error) {
+          setReviseError(messageOf(error));
+        }
+      }, [chapter, detail.projectId, text, setReviseJob]);
+
+      const revising = Boolean(reviseJob && reviseJob.state === 'running');
+      useEffect(() => {
+        if (!reviseJob) return undefined;
+        if (reviseJob.state === 'running') {
+          setChildBusy({
+            label: t('正在按修改意见重写本章…', 'Revising the chapter…'),
+            message: reviseJob.message || '',
+          });
+          return undefined;
+        }
+        setChildBusy(null);
+        if (reviseJob.state === 'done') {
+          const result = reviseJob.result || {};
+          if (typeof result.content === 'string' && result.content.trim() !== '') {
+            setText(result.content);
+            setDirty(true);
+          }
+          setReviseOpen(false);
+          notify(t('AI 已重写本章，确认后点「保存」', 'AI rewrote the chapter — review it, then press Save'), 'success');
+        } else if (reviseJob.state === 'error') {
+          setReviseError(reviseJob.error || t('AI 修改失败', 'Revision failed'));
+        }
+        return undefined;
+      }, [reviseJob ? reviseJob.jobId : null, reviseJob ? reviseJob.state : null, reviseJob ? reviseJob.message : null]);
+
       /** Run a navigation step, asking about the active page's unsaved edits. */
-      const leave = useCallback((action) => {
-        const unsaved = view === 'outline' ? outlineGuard.current.isDirty() : dirty;
+      const leave = useCallback((action) => {        const unsaved = view === 'outline' ? outlineGuard.current.isDirty() : dirty;
         if (!unsaved) {
           action();
           return;
@@ -1920,6 +2020,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onOutline: () => leave(() => setView('outline')),
               onOpenChapter: openStory,
               onNewChapter: () => leave(() => setDialogOpen(true)),
+              onRevise: () => {
+                setReviseError('');
+                setReviseOpen(true);
+              },
             })),
           h('section', { className: 'dsn-page' },
             h(OutlinePage, {
@@ -1947,6 +2051,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               setConfirmRequest(null);
               await request.action();
             },
+          })
+          : null,
+        reviseOpen
+          ? h(ReviseDialog, {
+            chapter,
+            text,
+            busy: revising,
+            error: reviseError,
+            onCancel: () => {
+              if (revising) return;
+              setReviseOpen(false);
+            },
+            onConfirm: startRevise,
           })
           : null,
         pendingLeave
