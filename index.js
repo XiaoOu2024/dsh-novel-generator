@@ -1428,7 +1428,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.3',
+    revision: '2026-10-27.4',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1811,6 +1811,34 @@ async function createSessionFor(ctx, root, project) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Record the preset a work's session should run under.
+ *
+ * A session fixes its preset when it is created, so this only changes the record
+ * the next session is built from — the Client says so after saving.
+ */
+async function updatePreset(ctx, root, body) {
+  const projectId = asText(body.projectId);
+  const requested = asText(body.agentPreset);
+  if (requested !== '') {
+    const presets = ctx.get('agentPresets');
+    if (presets && typeof presets.list === 'function') {
+      const list = await presets.list().catch(() => null);
+      const known = Array.isArray(list) ? list.map((entry) => entry.id) : [];
+      if (known.length && !known.includes(requested)) {
+        throw httpError(400, `没有这个预设：${requested}`);
+      }
+    }
+  }
+  const project = await mutateProject(root, projectId, (draft) => {
+    draft.agentPreset = requested === '' ? null : requested;
+    draft.updatedAt = Date.now();
+    return summarize(draft);
+  });
+  await exportProjectInfo(await readProject(root, projectId));
+  return { project, appliesAfterRebuild: true };
 }
 
 async function updateTimeline(root, body) {
@@ -2486,6 +2514,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return updateTimeline(root, body);
     case '/project/model':
       return updateModel(ctx, root, body);
+    case '/project/preset':
+      return updatePreset(ctx, root, body);
     case '/project/rebind':
       return rebindProject(ctx, root, body);
     case '/project/move':

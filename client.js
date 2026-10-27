@@ -432,7 +432,55 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
-    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel }) {
+    function PresetDialog({ project, presets, onCancel, onSaved }) {
+      const [preset, setPreset] = useState(project.agentPreset || '');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const list = Array.isArray(presets) ? presets : [];
+
+      const save = useCallback(async () => {
+        setBusy(true);
+        setError('');
+        try {
+          await api('/project/preset', { projectId: project.projectId, agentPreset: preset });
+          await onSaved();
+        } catch (saveError) {
+          setError(messageOf(saveError));
+        } finally {
+          setBusy(false);
+        }
+      }, [project.projectId, preset, onSaved]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(460px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('修改作品预设', 'Change work preset')),
+            h('div', { className: 'dsn-sub' }, project.title),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, t('预设', "Preset")),
+              h('select', {
+                className: 'dsn-select',
+                value: preset,
+                onChange: (event) => setPreset(event.target.value),
+              },
+              h('option', { value: '' }, t('默认预设', "Default preset")),
+              list.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name)))),
+            h('div', { className: 'dsn-hint span2' }, t('预设只在会话创建时生效；改完后重建会话才会用新预设。', 'A preset applies when a session is created; it takes effect after the work’s session is rebuilt.')),
+            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', "Cancel")),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy,
+              onClick: save,
+            }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
+    }
+
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -668,6 +716,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onEditModel(project);
               },
             }, t('模型', "Model")),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('修改这部作品的预设（重建会话后生效）', 'Change this work’s preset (applies after its session is rebuilt)'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onEditPreset(project);
+              },
+            }, t('预设', "Preset")),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
@@ -1943,6 +2000,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       // Set while a work runs a model job, so leaving the panel can warn first.
       const [busyNow, setBusyNow] = useState(null);
       const [modelTarget, setModelTarget] = useState(null);
+      const [presetTarget, setPresetTarget] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
         leaveGuard.current = guard;
@@ -2034,6 +2092,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onOpen: openProject,
                   onReload: loadBoot,
                   onEditModel: setModelTarget,
+                  onEditPreset: setPresetTarget,
                 }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
@@ -2056,6 +2115,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               await loadBoot();
               if (target && projectId === target.projectId) await loadDetail(target.projectId);
               if (warning) setError(warning);
+            },
+          })
+          : null,
+        presetTarget
+          ? h(PresetDialog, {
+            project: presetTarget,
+            presets: boot ? boot.presets : [],
+            onCancel: () => setPresetTarget(null),
+            onSaved: async () => {
+              setPresetTarget(null);
+              await loadBoot();
+              setToast({ text: t('预设已更新，重建会话后生效', 'Preset updated — it applies once the work’s session is rebuilt'), kind: 'success' });
             },
           })
           : null);
