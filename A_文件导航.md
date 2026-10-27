@@ -167,3 +167,7 @@ index.js	|	2026-10-27 19:00	|	新增 /chapter/revise：按修改意见重写整�
 client.js	|	2026-10-27 19:00	|	章节故事页新增「AI 修改」按钮与 ReviseDialog，结果回填编辑区并标记未保存
 README.md	|	2026-10-27 19:00	|	补充章节故事页与 AI 修改说明
 package.json	|	2026-10-27 19:00	|	0.1.24
+index.js	|	2026-10-27 20:20	|	新增 /project/prelude 与 preludeBlock：正文/推演/AI 修改三类提示都带作品前置（限 2000 字），并写入作品信息
+client.js	|	2026-10-27 20:20	|	作品列表新增「前置」按钮与 PreludeDialog（4 种预设 + 自由文本），行布局允许换行
+README.md	|	2026-10-27 20:20	|	补充作品级前置提示词说明
+package.json	|	2026-10-27 20:20	|	0.1.25

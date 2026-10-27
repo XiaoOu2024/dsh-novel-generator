@@ -189,7 +189,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-path{display:flex;gap:6px}
 .dsn-import{display:flex;align-items:center;gap:10px;margin:2px 0 12px}
 .dsn-list{display:flex;flex-direction:column;gap:8px}
-.dsn-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
+.dsn-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer}
 .dsn-row:hover{border-color:var(--dsw-alias-brand-primary)}
 .dsn-row-main{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -480,7 +480,84 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
-    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset }) {
+    /** Built-in preface prompts; the text is editable after picking one. */
+    const PRELUDE_MODES = [
+      { id: 'first', zh: '第一人称', en: 'First person', text: '全书使用第一人称叙述：只写「我」亲眼所见、亲耳所听、亲身所想，不描写别人的内心活动。' },
+      { id: 'thirdLimited', zh: '第三人称限知', en: 'Third person, limited', text: '全书使用第三人称限知视角：叙述跟随主角，只呈现他能感知到的一切，不越界写其他角色的内心。' },
+      { id: 'thirdOmniscient', zh: '第三人称全知', en: 'Third person, omniscient', text: '全书使用第三人称全知视角：叙述者可以进入任何角色的内心，但每次切换视角都要有场景依据，不要在同一场景里频繁跳视角。' },
+      { id: 'custom', zh: '自定义', en: 'Custom', text: '' },
+    ];
+
+    /**
+     * The work-wide preface prompt: a narrative angle preset plus anything else
+     * the author wants pinned in front of every request.
+     */
+    function PreludeDialog({ project, onCancel, onSaved }) {
+      const current = project.prelude || null;
+      const [mode, setMode] = useState(current && current.mode ? current.mode : '');
+      const [text, setText] = useState(current && current.text ? current.text : '');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+
+      const pickMode = useCallback((id) => {
+        setMode(id);
+        const preset = PRELUDE_MODES.find((entry) => entry.id === id);
+        if (preset && preset.text !== '') setText(preset.text);
+        if (id === '') setText('');
+      }, []);
+
+      const save = useCallback(async () => {
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api('/project/prelude', { projectId: project.projectId, mode, text });
+          await onSaved(result.project);
+        } catch (saveError) {
+          setError(messageOf(saveError));
+        } finally {
+          setBusy(false);
+        }
+      }, [project.projectId, mode, text, onSaved]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(620px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('前置提示词', 'Preface prompt')),
+            h('div', { className: 'dsn-sub' }, project.title),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, t('叙事角度（选一个会填入下面的文本）', 'Narrative angle (fills the text below)')),
+              h('select', {
+                className: 'dsn-select',
+                value: mode,
+                onChange: (event) => pickMode(event.target.value),
+              },
+              h('option', { value: '' }, t('不设置', 'Not set')),
+              PRELUDE_MODES.map((entry) => h('option', { key: entry.id, value: entry.id }, t(entry.zh, entry.en))))),
+            h('label', { className: 'dsn-field span2' },
+              h('span', { className: 'dsn-label' }, t('前置提示（可自由修改，最多 2000 字）', 'Preface text (edit freely, up to 2000 characters)')),
+              h('textarea', {
+                className: 'dsn-textarea',
+                style: { minHeight: '160px' },
+                value: text,
+                placeholder: t('每次生成正文、自动推演、AI 修改时都会放在提示最前面。例如：全书用第三人称限知；文风冷峻，少用形容词；不要出现现代网络用语。', 'Added in front of every generation, deduction and revision request. e.g. third-person limited; cold, spare prose; no modern slang.'),
+                onChange: (event) => setText(event.target.value),
+              })),
+            h('div', { className: 'dsn-hint span2' }, t('已填 {n} / 2000 字；留空即表示这本书不带前置提示。', '{n} / 2000 characters; leave it empty to send no preface.', { n: String(text).length })),
+            error ? h('div', { className: 'dsn-hint warn span2' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', 'Cancel')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy || String(text).length > 2000,
+              onClick: save,
+            }, busy ? t('保存中…', 'Saving…') : t('保存', 'Save')))));
+    }
+
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -725,6 +802,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onEditPreset(project);
               },
             }, t('预设', "Preset")),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('设置这本书的前置提示词（叙事角度等，每次生成都会带上）', 'Set this work’s preface prompt (narrative angle and more; carried by every request)'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onEditPrelude(project);
+              },
+            }, t('前置', 'Preface')),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
@@ -2118,6 +2204,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [busyNow, setBusyNow] = useState(null);
       const [modelTarget, setModelTarget] = useState(null);
       const [presetTarget, setPresetTarget] = useState(null);
+      const [preludeTarget, setPreludeTarget] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
         leaveGuard.current = guard;
@@ -2210,6 +2297,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onReload: loadBoot,
                   onEditModel: setModelTarget,
                   onEditPreset: setPresetTarget,
+                  onEditPrelude: setPreludeTarget,
                 }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
@@ -2246,6 +2334,23 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               // The open work shows its preset in the top bar, so refresh it too.
               if (projectId) await loadDetail(projectId);
               setToast({ text: t('预设已更新，重建会话后生效', 'Preset updated — it applies once the work’s session is rebuilt'), kind: 'success' });
+            },
+          })
+          : null,
+        preludeTarget
+          ? h(PreludeDialog, {
+            project: preludeTarget,
+            onCancel: () => setPreludeTarget(null),
+            onSaved: async (saved) => {
+              setPreludeTarget(null);
+              await loadBoot();
+              const empty = !saved || !saved.prelude || !saved.prelude.text;
+              setToast({
+                text: empty
+                  ? t('已清除前置提示词', 'Preface prompt cleared')
+                  : t('前置提示词已保存，下一次生成就生效', 'Preface prompt saved — it applies to the next generation'),
+                kind: 'success',
+              });
             },
           })
           : null);

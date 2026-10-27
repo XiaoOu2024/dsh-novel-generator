@@ -356,6 +356,8 @@ async function exportProjectInfo(project) {
     lines.push(`- 绑定会话：${project.sessionId || '（无）'}`);
     lines.push(`- 模型：${project.model ? `${project.model.provider} / ${project.model.model}` : '（默认）'}`);
     lines.push(`- 预设：${project.agentPreset || '（默认）'}`);
+    const preludeText = project.prelude && project.prelude.text ? String(project.prelude.text).trim() : '';
+    lines.push(`- 前置提示词：${preludeText === '' ? '（未设置）' : '已设置，见文末'}`);
     lines.push(`- 快照间隔：每 ${timeline.unitDays || 30} 天一份`);
     lines.push(`- 已写入快照：${snapshots.length ? snapshots.map((snapshot) => `第 ${snapshot.day} 天`).join('、') : '（暂无）'}`);
     lines.push(`- 故事当前：第 ${lastChapterEnd(project)} 天`);
@@ -382,6 +384,16 @@ async function exportProjectInfo(project) {
     lines.push('');
     lines.push('> 章节正文在同目录的「第NN章 标题.md」，各章梗概在「章节大纲」目录，世界快照在「世界快照」目录。');
     lines.push('');
+    if (preludeText !== '') {
+      lines.push('## 前置提示词');
+      lines.push('');
+      lines.push('每次生成正文、自动推演、AI 修改时都会放在提示最前面：');
+      lines.push('');
+      lines.push('```text');
+      lines.push(preludeText);
+      lines.push('```');
+      lines.push('');
+    }
     await writeFile(projectInfoFile(project), lines.join('\n'), 'utf8');
   } catch {
     // Best effort.
@@ -660,6 +672,9 @@ function summarize(project) {
     sessionId: project.sessionId,
     agentPreset: project.agentPreset,
     model: project.model,
+    // The work-wide preface prompt: narrative angle plus anything else the
+    // author wants every request to carry.
+    prelude: project.prelude || null,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     chapterCount: chapters.length,
@@ -1205,6 +1220,8 @@ function chapterPrompt(project, chapter, previous) {
   const { snapshot } = snapshotDistance(project, chapter);
   const lines = [];
   lines.push('你现在是这部小说的执笔作者。只输出本章正文，不要解释、不要标题、不要分点提纲。');
+  const prelude = preludeBlock(project);
+  if (prelude !== '') lines.push('', prelude);
   lines.push(`【篇幅】本章正文必须控制在 ${minWords}～${maxWords} 字之间，写够 ${maxWords} 字附近就收尾，超过 ${maxWords} 字视为不合格。`);
   lines.push('');
   const shownTitle = chapter.title && !/^第\s*\d+\s*章$/u.test(chapter.title) ? ` ${chapter.title}` : '';
@@ -1242,6 +1259,8 @@ function deducePrompt(project, chapter) {
   lines.push('你是这部小说的剧情推演器。请依据最近的世界快照，以及从该快照之后已经写过的各章梗概，推演下一章的大纲。');
   lines.push('只输出一个 JSON 对象，不要任何额外文字。');
   lines.push('');
+  const prelude = preludeBlock(project);
+  if (prelude !== '') lines.push(prelude);
   lines.push('【最近的世界快照】');
   lines.push(snapshotBlock(snapshot));
   lines.push('');
@@ -1268,6 +1287,8 @@ function revisePrompt(project, chapter, currentText, instruction) {
   lines.push('你是这部小说的修订者。下面是本章现有正文，以及作者给出的修改意见。');
   lines.push('请按修改意见重写这一章，输出修订后的**完整正文**：不要解释、不要列出改动点、不要加标题行。');
   lines.push('');
+  const prelude = preludeBlock(project);
+  if (prelude !== '') lines.push(prelude);
   lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
   lines.push('');
   lines.push('【现有正文】');
@@ -1456,7 +1477,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.8',
+    revision: '2026-10-27.9',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1839,6 +1860,44 @@ async function createSessionFor(ctx, root, project) {
   } catch {
     return null;
   }
+}
+
+/** Longest preface prompt accepted, in characters. */
+const PRELUDE_MAX_CHARS = 2000;
+
+/**
+ * Save one work's preface prompt. `mode` only labels which preset the text came
+ * from; the text itself is what every request carries, so the author can edit a
+ * preset's wording or write their own.
+ */
+async function updatePrelude(root, body) {
+  const projectId = asText(body.projectId);
+  const mode = asText(body.mode);
+  const text = typeof body.text === 'string' ? body.text : '';
+  if (text.length > PRELUDE_MAX_CHARS) {
+    throw httpError(400, `前置提示词最多 ${PRELUDE_MAX_CHARS} 字`);
+  }
+  const trimmed = text.trim();
+  const project = await mutateProject(root, projectId, (draft) => {
+    draft.prelude = trimmed === '' && mode === ''
+      ? null
+      : { mode, text: trimmed, updatedAt: Date.now() };
+    draft.updatedAt = Date.now();
+    return summarize(draft);
+  });
+  await exportProjectInfo(await readProject(root, projectId));
+  return { project };
+}
+
+/** The preface block every writing request starts with, or '' when unset. */
+function preludeBlock(project) {
+  const text = project && project.prelude && project.prelude.text ? String(project.prelude.text).trim() : '';
+  if (text === '') return '';
+  return [
+    '【本书前置设定】（作者为全书设定的写作约束，优先于下文提示，但不得违反本章梗概与已发生的事实）',
+    text,
+    '',
+  ].join('\n');
 }
 
 /**
@@ -2584,6 +2643,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return updateModel(ctx, root, body);
     case '/project/preset':
       return updatePreset(ctx, root, body);
+    case '/project/prelude':
+      return updatePrelude(root, body);
     case '/project/rebind':
       return rebindProject(ctx, root, body);
     case '/project/move':
