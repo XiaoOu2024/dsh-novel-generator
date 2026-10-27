@@ -226,14 +226,49 @@ function snapshotJsonPaths(project, snapshot) {
   };
 }
 
-/** The synopsis body of an outline card (`（还没有写梗概）` reads as empty). */
+/**
+ * Before an outline card is overwritten, keep the previous version when the new
+ * synopsis is shorter. The card is the only copy of that text, so this is the
+ * difference between a recoverable edit and losing thousands of characters.
+ * History lives in `章节大纲/.history/` and is pruned to the newest few files.
+ */
+async function keepOutlineHistory(cardPath, nextSynopsis) {
+  let previous = null;
+  try {
+    previous = await readFile(cardPath, 'utf8');
+  } catch {
+    return;
+  }
+  const oldBody = parseSynopsis(previous);
+  if (oldBody.length <= nextSynopsis.length) return;
+  try {
+    const dir = join(join(cardPath, '..'), '.history');
+    await mkdir(dir, { recursive: true });
+    const stem = basename(cardPath, '.md');
+    await writeFile(join(dir, `${stem}.${Date.now()}.md`), previous, 'utf8');
+    const kept = (await readdir(dir)).filter((name) => name.startsWith(`${stem}.`)).sort();
+    for (const name of kept.slice(0, Math.max(0, kept.length - 5))) {
+      await unlink(join(dir, name)).catch(() => {});
+    }
+  } catch {
+    // History is a safety net; failing to keep it must not block the save.
+  }
+}
+
+/**
+ * The synopsis body of an outline card (`（还没有写梗概）` reads as empty).
+ *
+ * The synopsis is user prose and may itself contain Markdown headings, so it is
+ * everything after the marker to the end of the file — the writer always puts it
+ * last. Cutting at the next `## ` heading used to truncate any synopsis that had
+ * one inside it, and the shortened value then overwrote the file on the next
+ * save, which is how a 5000-character synopsis came back as a few lines.
+ */
 function parseSynopsis(text) {
   const marker = '## 故事梗概';
   const start = text.indexOf(marker);
   if (start === -1) return '';
-  const rest = text.slice(start + marker.length);
-  const next = rest.indexOf('\n## ');
-  const body = (next === -1 ? rest : rest.slice(0, next)).trim();
+  const body = text.slice(start + marker.length).trim();
   return body === '（还没有写梗概）' ? '' : body;
 }
 
@@ -276,6 +311,10 @@ async function exportChapterOutline(project, chapter) {
     await mkdir(target.dir, { recursive: true });
     const outline = chapter.outline || null;
     const span = chapterWindow(project, chapter);
+    // The card is the only copy of the synopsis, so a write that shortens it a
+    // lot keeps the previous card aside first: a truncation bug then costs one
+    // click to undo instead of the whole text.
+    await keepOutlineHistory(target.file, (outline && outline.synopsis) || '');
     const lines = [];
     lines.push(`# 第 ${(Number(chapter.index) || 0) + 1} 章 ${chapter.title || '未命名'}`);
     lines.push('');
@@ -1389,7 +1428,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-21.3',
+    revision: '2026-10-27.3',
     projects,
     models: {
       default: modelCatalog.default || null,

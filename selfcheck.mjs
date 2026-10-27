@@ -58,6 +58,33 @@ async function call(path, body) {
   const saved = await call('/chapter/save', { projectId, chapterId: outlined.chapter.chapterId, content: '雨下得很大。门被敲响了三下。' });
   console.log('save:', JSON.stringify({ wordCount: saved.chapter.wordCount, status: saved.chapter.status }));
 
+  // A synopsis is free prose and may carry Markdown headings of its own: the
+  // round trip through 章节大纲/*.md must not cut it at the next heading.
+  const headingSynopsis = [
+    '开局：主角在雨夜穿越到青石镇。',
+    '',
+    '## 中段转折',
+    '',
+    '他在药铺得知镇上每隔十年会有一场大疫。',
+    '',
+    '## 结尾',
+    '',
+    '他决定留下来查清铜牌的来历。',
+  ].join('\n');
+  await call('/outline/save', {
+    projectId,
+    chapterId: outlined.chapter.chapterId,
+    title: '雨夜来客',
+    startDay: 0,
+    outline: { durationDays: 12, minWords: 900, maxWords: 2400, synopsisMinChars: 10, synopsis: headingSynopsis },
+  });
+  const reread = await call(`/project?projectId=${projectId}`);
+  const keptSynopsis = (reread.chapters[0].outline || {}).synopsis || '';
+  if (keptSynopsis !== headingSynopsis) {
+    throw new Error(`带小标题的梗概回读不一致：写入 ${headingSynopsis.length} 字，读回 ${keptSynopsis.length} 字`);
+  }
+  console.log('synopsis round trip:', JSON.stringify({ chars: keptSynopsis.length, headings: (keptSynopsis.match(/^## /gm) || []).length }));
+
   const bootstrap = await call('/bootstrap');
   console.log('bootstrap:', JSON.stringify({
     projects: bootstrap.projects.length,
