@@ -1201,7 +1201,10 @@ function stretchBefore(project, chapter, snapshot) {
   return (project.chapters || [])
     .filter((entry) => entry.chapterId !== chapter.chapterId
       && entry.startDay < chapter.startDay
-      && chapterWindow(project, entry).end > base
+      // The snapshot at day `base` covers chapters ending strictly before it, so
+      // a chapter ending exactly on that day is still unwritten history for this
+      // stretch and must be handed to the writer (>= rather than >).
+      && chapterWindow(project, entry).end >= base
       && ((entry.outline && entry.outline.synopsis) || '').trim() !== '')
     .sort((a, b) => a.startDay - b.startDay);
 }
@@ -1496,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.11',
+    revision: '2026-10-27.16',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2046,7 +2049,7 @@ function nextChapterIndex(project) {
   return max + 1;
 }
 
-async function saveOutline(root, body) {
+async function saveOutline(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
   const outline = normalizeOutline(body.outline);
@@ -2100,10 +2103,21 @@ async function saveOutline(root, body) {
     await exportChapterOutline(savedProject, savedChapter);
     await exportProjectInfo(savedProject);
   }
-  return result;
+  // Creating (or re-timing) a chapter that brings the story onto an interval
+  // point is what earns the snapshot for that point: the chapter ending exactly
+  // there is still unwritten, so the snapshot is built from what came before it.
+  let snapshotJobId = null;
+  if (savedChapter) {
+    const fresh = await readProject(root, projectId);
+    const target = autoSnapshotTarget(fresh, chapterWindow(fresh, savedChapter).end);
+    if (target !== null) {
+      snapshotJobId = registerSnapshot(ctx, root, registry, projectId, target).jobId;
+    }
+  }
+  return snapshotJobId === null ? result : { ...result, snapshotJobId };
 }
 
-async function saveChapter(root, body) {
+async function saveChapter(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
   const content = typeof body.content === 'string' ? body.content : '';
@@ -2123,7 +2137,16 @@ async function saveChapter(root, body) {
     return { chapter: { ...chapter, content: undefined }, project: summarize(project) };
   });
   await exportChapter(savedProject, savedChapter, content);
-  return result;
+  // Saving prose is the other way story time advances, so a point that is due
+  // gets its snapshot here too. The check is idempotent: an existing point is
+  // never re-created by an ordinary save.
+  let snapshotJobId = null;
+  if (savedChapter) {
+    const fresh = await readProject(root, projectId);
+    const target = autoSnapshotTarget(fresh, chapterWindow(fresh, savedChapter).end);
+    if (target !== null) snapshotJobId = registerSnapshot(ctx, root, registry, projectId, target).jobId;
+  }
+  return snapshotJobId === null ? result : { ...result, snapshotJobId };
 }
 
 /** Display name the plugin gives the sidebar workspace that holds its sessions. */
@@ -2256,15 +2279,21 @@ function previousChapter(project, chapter) {
 }
 
 /**
- * Chapters that belong to the stretch `(fromDay, point]`: fully written up to
- * the point, so a chapter that straddles it (the one still being written) is
- * left out. The chapter starting exactly at `fromDay` is included.
+ * Chapters that feed the snapshot at `point`: the stretch `[fromDay, point)`.
+ *
+ * A chapter belongs to the snapshot of the *next* point after it ends:
+ *
+ * - `end < point` — the chapter ending exactly on the point is the one this
+ *   snapshot is being taken for; it is still unwritten when the snapshot is
+ *   created, so counting it would pull unwritten plot into the world state.
+ * - `end >= fromDay` — every chapter is read by exactly one snapshot, and the
+ *   previous snapshot's last chapter is not read a second time.
  */
 function chaptersForPoint(project, fromDay, point) {
   return (project.chapters || [])
     .filter((chapter) => {
       const span = chapterWindow(project, chapter);
-      if (span.end > point || span.end <= fromDay) return false;
+      if (span.end >= point || span.end < fromDay) return false;
       return ((chapter.outline && chapter.outline.synopsis) || '').trim() !== ''
         || String(chapter.content || '').trim() !== '';
     })
@@ -2278,6 +2307,13 @@ function chaptersForPoint(project, fromDay, point) {
  * in order instead of skipping to the end.
  */
 function registerSnapshot(ctx, root, registry, projectId, targetDay) {
+  // One snapshot job per work at a time: two concurrent cascades would each read
+  // a half-written snapshot list and produce the same point twice.
+  for (const running of registry.jobs.values()) {
+    if (running.kind === 'snapshot' && running.projectId === projectId && running.state === 'running') {
+      return running;
+    }
+  }
   return startJob(registry, { kind: 'snapshot', projectId }, async (job) => {
     // The sequence is fixed from the state at the start of the job: recomputing
     // it every round would regenerate the last point forever once it exists.
@@ -2733,9 +2769,9 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
     case '/project/import':
       return importProject(ctx, root, body);
     case '/outline/save':
-      return saveOutline(root, body);
+      return saveOutline(ctx, root, registry, body);
     case '/chapter/save':
-      return saveChapter(root, body);
+      return saveChapter(ctx, root, registry, body);
     case '/generate':
       return startGenerate(ctx, root, registry, body);
     case '/chapter/revise':
