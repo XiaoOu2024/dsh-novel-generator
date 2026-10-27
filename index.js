@@ -922,6 +922,20 @@ function normalizeSnapshot(raw) {
 
 /* ------------------------------------------------------------ agent work */
 
+/** The preset a work records, but only when the deployment still offers it. */
+async function usablePreset(ctx, presetId) {
+  if (!presetId) return false;
+  const presets = ctx.get('agentPresets');
+  if (!presets || typeof presets.list !== 'function') return true;
+  try {
+    const list = await presets.list();
+    if (!Array.isArray(list) || list.length === 0) return true;
+    return list.some((entry) => entry.id === presetId);
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Bind a fresh session to a work whose old one disappeared (deleted in the
  * sidebar, or gone from the session store). The work's memory — snapshots,
@@ -931,7 +945,12 @@ function normalizeSnapshot(raw) {
 async function rebindSession(ctx, root, project) {
   const controller = ctx.get('sessionController');
   if (controller === undefined) throw httpError(503, '当前部署缺少 sessionController 服务，无法为作品重建会话');
-  const created = await controller.create(project.agentPreset ? { cwd: project.cwd, agentPreset: project.agentPreset } : { cwd: project.cwd });
+  // A preset can disappear when its plugin is uninstalled; falling back to the
+  // profile default keeps the work usable instead of failing every rebuild.
+  const presetOk = await usablePreset(ctx, project.agentPreset);
+  const created = await controller.create(presetOk && project.agentPreset
+    ? { cwd: project.cwd, agentPreset: project.agentPreset }
+    : { cwd: project.cwd });
   const sessionId = created && created.sessionId ? created.sessionId : null;
   if (!sessionId) throw httpError(502, '没能为作品重建会话');
   if (project.model) {
@@ -1477,7 +1496,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.10',
+    revision: '2026-10-27.11',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1511,6 +1530,11 @@ async function createProject(ctx, root, body) {
   const cwd = asText(body.cwd);
   if (cwd === '') throw httpError(400, '请先选择作品的工作目录');
   const agentPreset = asText(body.agentPreset) || undefined;
+  // New works prefer the bundled author preset when its plugin is installed, and
+  // otherwise fall back to the profile default instead of failing.
+  const chosenPreset = agentPreset !== undefined && await usablePreset(ctx, agentPreset)
+    ? agentPreset
+    : (await usablePreset(ctx, AUTHOR_PRESET_ID) ? AUTHOR_PRESET_ID : undefined);
   const model = body.model && asText(body.model.provider) && asText(body.model.model)
     ? {
       provider: asText(body.model.provider),
@@ -1529,7 +1553,7 @@ async function createProject(ctx, root, body) {
     throw httpError(400, `无法在工作目录下创建作品文件夹：${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const created = await controller.create(agentPreset === undefined ? { cwd } : { cwd, agentPreset });
+  const created = await controller.create(chosenPreset === undefined ? { cwd } : { cwd, agentPreset: chosenPreset });
   const sessionId = created && created.sessionId ? created.sessionId : null;
   let warning = null;
   if (sessionId && model) {
@@ -1546,7 +1570,7 @@ async function createProject(ctx, root, body) {
     projectId,
     title,
     cwd,
-    agentPreset: agentPreset || created.agentPreset || null,
+    agentPreset: chosenPreset || created.agentPreset || null,
     model,
     // Every new work starts with the default narrative preface; the author can
     // edit or clear it from the work list.
@@ -1913,6 +1937,9 @@ const PRELUDE_PRESETS = [
 
 /** The preface a fresh work starts with. */
 const DEFAULT_PRELUDE_MODE = 'thirdOmniscient';
+
+/** Preset id contributed by the optional `dsh-novel-author-preset` sub-plugin. */
+const AUTHOR_PRESET_ID = 'novel-studio-author';
 
 function defaultPrelude() {
   const preset = PRELUDE_PRESETS.find((entry) => entry.id === DEFAULT_PRELUDE_MODE);
