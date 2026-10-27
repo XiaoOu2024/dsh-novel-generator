@@ -362,14 +362,6 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       return model ? model.name : `${selection.provider} / ${selection.model}`;
     }
 
-    /** Human name of a preset id, for buttons that show the current choice. */
-    function presetLabel(boot, presetId) {
-      if (!presetId) return t('默认预设', 'Default preset');
-      const list = (boot && boot.presets) || [];
-      const found = list.find((entry) => entry.id === presetId);
-      return found ? found.name || found.id : presetId;
-    }
-
     /** Change one project's model; the Host also switches its Session. */
     function ModelDialog({ project, models, onCancel, onSaved }) {
       const groups = (models && models.groups) || [];
@@ -2087,14 +2079,6 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             : h('div', { className: 'dsn-title' }, t('小说工坊', 'Novel Studio')),
           projectId && detail ? h('div', { className: 'dsn-sub' }, detail.title) : null,
           h('div', { className: 'dsn-spacer' }),
-          projectId && detail
-            ? h('button', {
-              className: 'dsn-btn ghost',
-              type: 'button',
-              title: t('修改这部作品的预设（重建会话后生效）', 'Change this work’s preset (applies after its session is rebuilt)'),
-              onClick: () => setPresetTarget(detail),
-            }, t('预设 · {name}', 'Preset · {name}', { name: presetLabel(boot, detail.agentPreset) }))
-            : null,
           h('button', { className: 'dsn-btn ghost', type: 'button', onClick: close }, t('关闭', 'Close'))),
         error ? h('div', { className: 'dsn-error' }, error) : null,
         h('div', { className: 'dsn-body' },
