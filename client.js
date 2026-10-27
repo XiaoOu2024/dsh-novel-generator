@@ -480,31 +480,29 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
-    /** Built-in preface prompts; the text is editable after picking one. */
-    const PRELUDE_MODES = [
-      { id: 'first', zh: '第一人称', en: 'First person', text: '全书使用第一人称叙述：只写「我」亲眼所见、亲耳所听、亲身所想，不描写别人的内心活动。' },
-      { id: 'thirdLimited', zh: '第三人称限知', en: 'Third person, limited', text: '全书使用第三人称限知视角：叙述跟随主角，只呈现他能感知到的一切，不越界写其他角色的内心。' },
-      { id: 'thirdOmniscient', zh: '第三人称全知', en: 'Third person, omniscient', text: '全书使用第三人称全知视角：叙述者可以进入任何角色的内心，但每次切换视角都要有场景依据，不要在同一场景里频繁跳视角。' },
-      { id: 'custom', zh: '自定义', en: 'Custom', text: '' },
-    ];
-
     /**
      * The work-wide preface prompt: a narrative angle preset plus anything else
-     * the author wants pinned in front of every request.
+     * the author wants pinned in front of every request. The preset wording comes
+     * from the Host so there is one copy of the text.
      */
-    function PreludeDialog({ project, onCancel, onSaved }) {
+    function PreludeDialog({ project, presets, defaultMode, onCancel, onSaved }) {
+      const modes = Array.isArray(presets) && presets.length ? presets : [];
+      const fallbackMode = defaultMode || 'thirdOmniscient';
       const current = project.prelude || null;
-      const [mode, setMode] = useState(current && current.mode ? current.mode : '');
-      const [text, setText] = useState(current && current.text ? current.text : '');
+      const initialMode = current && current.mode ? current.mode : fallbackMode;
+      const initialPreset = modes.find((entry) => entry.id === initialMode);
+      const [mode, setMode] = useState(initialMode);
+      const [text, setText] = useState(
+        current && current.text ? current.text : (initialPreset && initialPreset.text) || '',
+      );
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState('');
 
       const pickMode = useCallback((id) => {
         setMode(id);
-        const preset = PRELUDE_MODES.find((entry) => entry.id === id);
-        if (preset && preset.text !== '') setText(preset.text);
-        if (id === '') setText('');
-      }, []);
+        const preset = modes.find((entry) => entry.id === id);
+        setText(preset && preset.text ? preset.text : '');
+      }, [modes]);
 
       const save = useCallback(async () => {
         setBusy(true);
@@ -534,14 +532,14 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onChange: (event) => pickMode(event.target.value),
               },
               h('option', { value: '' }, t('不设置', 'Not set')),
-              PRELUDE_MODES.map((entry) => h('option', { key: entry.id, value: entry.id }, t(entry.zh, entry.en))))),
+              modes.map((entry) => h('option', { key: entry.id, value: entry.id }, t(entry.zh, entry.en))))),
             h('label', { className: 'dsn-field span2' },
               h('span', { className: 'dsn-label' }, t('前置提示（可自由修改，最多 2000 字）', 'Preface text (edit freely, up to 2000 characters)')),
               h('textarea', {
                 className: 'dsn-textarea',
-                style: { minHeight: '160px' },
+                style: { minHeight: '200px' },
                 value: text,
-                placeholder: t('每次生成正文、自动推演、AI 修改时都会放在提示最前面。例如：全书用第三人称限知；文风冷峻，少用形容词；不要出现现代网络用语。', 'Added in front of every generation, deduction and revision request. e.g. third-person limited; cold, spare prose; no modern slang.'),
+                placeholder: t('每次生成正文、自动推演、AI 修改时都会放在提示最前面。', 'Added in front of every generation, deduction and revision request.'),
                 onChange: (event) => setText(event.target.value),
               })),
             h('div', { className: 'dsn-hint span2' }, t('已填 {n} / 2000 字；留空即表示这本书不带前置提示。', '{n} / 2000 characters; leave it empty to send no preface.', { n: String(text).length })),
@@ -2340,6 +2338,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         preludeTarget
           ? h(PreludeDialog, {
             project: preludeTarget,
+            presets: boot ? boot.preludePresets : [],
+            defaultMode: boot ? boot.defaultPreludeMode : 'thirdOmniscient',
             onCancel: () => setPreludeTarget(null),
             onSaved: async (saved) => {
               setPreludeTarget(null);

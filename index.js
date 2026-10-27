@@ -1477,7 +1477,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.9',
+    revision: '2026-10-27.10',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1494,6 +1494,9 @@ async function bootstrap(ctx, root) {
       failures: modelCatalog.failures || [],
     },
     presets: presetList,
+    // Canonical preface wording, so the Client does not keep a second copy.
+    preludePresets: PRELUDE_PRESETS,
+    defaultPreludeMode: DEFAULT_PRELUDE_MODE,
   };
 }
 
@@ -1545,6 +1548,9 @@ async function createProject(ctx, root, body) {
     cwd,
     agentPreset: agentPreset || created.agentPreset || null,
     model,
+    // Every new work starts with the default narrative preface; the author can
+    // edit or clear it from the work list.
+    prelude: defaultPrelude(),
     sessionId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -1864,6 +1870,54 @@ async function createSessionFor(ctx, root, project) {
 
 /** Longest preface prompt accepted, in characters. */
 const PRELUDE_MAX_CHARS = 2000;
+
+/**
+ * Built-in preface prompts. The Host owns the canonical wording, so the Client,
+ * the creation default and any migration all read the same text.
+ */
+const PRELUDE_PRESETS = [
+  {
+    id: 'thirdOmniscient',
+    zh: '第三人称全知',
+    en: 'Third person, omniscient',
+    text: [
+      '写作要求：传统修仙文第三人称叙事，参考忘语《凡人修仙传》风格，禁止贴身 POV 视角。',
+      '',
+      '1. 叙事优先用环境、场景作为句子开头，不要每一句都从主角的感受出发；',
+      '2. 控制“他”字的出现频率，不要大量以“他”开头造句；',
+      '3. 描写动作、环境、事件为主，不要细碎拆解主角每一丝触觉、听觉；',
+      '4. 可以写主角的反应，但不要连续堆砌“他看见、他听见、他感到”；',
+      '5. 句子连贯，不要大量一句一段的超短碎句；',
+      '6. 以作者旁白来铺陈场景，把感官描写融入环境，不要单独拎出来写角色内心感受。',
+    ].join('\n'),
+  },
+  {
+    id: 'thirdLimited',
+    zh: '第三人称限知',
+    en: 'Third person, limited',
+    text: '全书使用第三人称限知视角：叙述跟随主角，只呈现他能感知到的一切，不越界写其他角色的内心。',
+  },
+  {
+    id: 'first',
+    zh: '第一人称',
+    en: 'First person',
+    text: '全书使用第一人称叙述：只写「我」亲眼所见、亲耳所听、亲身所想，不描写别人的内心活动。',
+  },
+  {
+    id: 'custom',
+    zh: '自定义',
+    en: 'Custom',
+    text: '',
+  },
+];
+
+/** The preface a fresh work starts with. */
+const DEFAULT_PRELUDE_MODE = 'thirdOmniscient';
+
+function defaultPrelude() {
+  const preset = PRELUDE_PRESETS.find((entry) => entry.id === DEFAULT_PRELUDE_MODE);
+  return preset ? { mode: preset.id, text: preset.text, updatedAt: Date.now() } : null;
+}
 
 /**
  * Save one work's preface prompt. `mode` only labels which preset the text came

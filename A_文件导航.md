@@ -171,3 +171,7 @@ index.js	|	2026-10-27 20:20	|	新增 /project/prelude 与 preludeBlock：正文/
 client.js	|	2026-10-27 20:20	|	作品列表新增「前置」按钮与 PreludeDialog（4 种预设 + 自由文本），行布局允许换行
 README.md	|	2026-10-27 20:20	|	补充作品级前置提示词说明
 package.json	|	2026-10-27 20:20	|	0.1.25
+index.js	|	2026-10-27 20:45	|	前置预设文案集中到 Host（默认第三人称全知，240 字），新建作品自动带默认前置；bootstrap 暴露 preludePresets
+client.js	|	2026-10-27 20:45	|	PreludeDialog 改为从 bootstrap 读预设与默认项
+README.md	|	2026-10-27 20:45	|	说明默认前置与四种预设
+package.json	|	2026-10-27 20:45	|	0.1.26
