@@ -2,42 +2,18 @@
 # switched independently:
 #
 #   1. `dsh-novel-generator` — the studio itself (timeline, chapters, snapshots).
-#   2. `preset-novel-studio-author` — the blank author Agent preset. Turning this
-#      row off in the plugin list simply hides the preset; the studio keeps
-#      working with whatever preset the profile already offers.
+#   2. `preset-novel-studio-author` — the author preset, owned by the companion
+#      package `dsh-novel-author-preset`. The row names that package (not the
+#      generic `@deepseek-ai/dsh-agent-preset`) so the plugin list shows its own
+#      title and description; the package registers the preset when it activates
+#      and withdraws it when the row is switched off.
 #
-# The second row is what used to be the separate `dsh-novel-author-preset`
-# package: shipping it here means installing the studio brings the preset too.
+# The companion package is a dependency of this one, so installing the studio
+# brings the preset with it.
 - insert:
     - id: dsh-novel-generator
       name: 'dsh-novel-generator'
       config: {}
     - id: preset-novel-studio-author
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: novel-studio-author
-        name: 小说工坊 · 作者
-        description: 小说工坊自带的空白写作预设，只规定"写正文"这件事，不预设任何文风或视角。
-        order: 60
-        plugins:
-          - id: persona
-            name: '@deepseek-ai/dsh-persona'
-            config:
-              # Short, neutral, output contract only; style and viewpoint belong
-              # to the work-level preface prompt.
-              prefix: |-
-                你是小说写作者，负责按用户给出的设定、梗概与要求，写出完整的中文小说正文。
-                只输出正文本身：不要解释、不要提纲、不要评论、不要加标题行。
-                文风、叙事视角、人称与篇幅一律以上下文中的要求为准，不要自行添加偏好。
-              complete: true
-              includeRuntimeContext: false
-          # Compaction only: a long serial is a long conversation, and the writer
-          # has no use for shell, files, web or delegation.
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
+      name: 'dsh-novel-author-preset'
+      config: {}

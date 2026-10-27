@@ -1,6 +1,6 @@
 {
   "name": "dsh-novel-generator",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "type": "module",
   "description": "Novel studio for DeepSeek Harness: a draggable story timeline, world snapshots, chapter outlines, and chapters written by the work's own agent.",
   "license": "MIT",
@@ -55,5 +55,8 @@
         "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
+  },
+  "dependencies": {
+    "dsh-novel-author-preset": "^0.3.0"
   }
 }
