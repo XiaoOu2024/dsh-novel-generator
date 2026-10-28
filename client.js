@@ -1357,7 +1357,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('改写中…', 'Revising…') : t('确认修改', 'Revise')))));
     }
 
-    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange }) {
+    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange, onReviseSynopsis, synopsisDraft, onSynopsisDraftApplied, revisingSynopsis }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -1460,34 +1460,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const generating = job && job.state === 'running' && job.kind === 'generate';
       const composing = job && job.state === 'running' && job.kind === 'compose';
-      const revisingSynopsis = job && job.state === 'running' && job.kind === 'synopsis-revise';
 
-      /** AI 修改故事梗概: rewrite the synopsis from a note, keep it as a draft. */
-      const [synopsisReviseOpen, setSynopsisReviseOpen] = useState(false);
-      const [synopsisReviseError, setSynopsisReviseError] = useState('');
-      const startSynopsisRevise = useCallback(async (instruction) => {
-        if (!chapter) return;
-        if (String(form.synopsis || '').trim() === '') {
-          setSynopsisReviseError(t('还没有故事梗概可改，先写一段再来', 'There is no synopsis yet — write one first.'));
-          return;
-        }
-        if (String(instruction || '').trim() === '') {
-          setSynopsisReviseError(t('请先写清修改意见', 'Write what should change first.'));
-          return;
-        }
-        setSynopsisReviseError('');
-        try {
-          const started = await api('/outline/revise', {
-            projectId: detail.projectId,
-            chapterId: chapter.chapterId,
-            synopsis: form.synopsis,
-            instruction: String(instruction).trim(),
-          });
-          setJob(started);
-        } catch (error) {
-          setSynopsisReviseError(messageOf(error));
-        }
-      }, [detail.projectId, chapter, form.synopsis, setJob]);
+      /**
+       * A rewritten synopsis arrives from the workspace (which owns the dialog,
+       * because the workspace stage sits outside this page's transformed track
+       * and a dialog rendered in here would be drawn off-screen).
+       */
+      useEffect(() => {
+        if (typeof synopsisDraft !== 'string' || synopsisDraft === '') return;
+        setForm((current) => ({ ...current, synopsis: synopsisDraft }));
+        setDirty(true);
+        if (typeof onSynopsisDraftApplied === 'function') onSynopsisDraftApplied();
+      }, [synopsisDraft]);
 
       /** 自动推演: deduce synopsis, title and the whole chapter, then save. */
       const deduce = useCallback(() => {
@@ -1560,17 +1544,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           notify(t('已重新推演并保存章节', "Re-deduced and saved the chapter"), 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
-        if (job.kind === 'synopsis-revise' && job.state === 'done') {
-          const result = job.result || {};
-          if (typeof result.synopsis === 'string' && result.synopsis.trim() !== '') {
-            setForm((current) => ({ ...current, synopsis: result.synopsis }));
-            setDirty(true);
-          }
-          setSynopsisReviseOpen(false);
-          notify(t('AI 已改写故事梗概，确认后点「保存」', 'AI rewrote the synopsis — review it, then press Save'), 'success');
-        }
         if (job.state === 'error') {
-          if (job.kind === 'synopsis-revise') setSynopsisReviseError(job.error || t('改写失败', 'Revision failed'));
           notify(job.error || t('任务失败', "Task failed"), 'error');
         }
       }, [job ? job.jobId : null, job ? job.state : null]);
@@ -1589,8 +1563,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               ? t('还没有故事梗概可改', 'There is no synopsis to revise yet')
               : t('让 AI 按修改意见改写「故事梗概」（不动正文）', 'Let AI rewrite the synopsis from your notes (the chapter text stays)'),
             onClick: () => {
-              setSynopsisReviseError('');
-              setSynopsisReviseOpen(true);
+              if (typeof onReviseSynopsis === 'function') onReviseSynopsis(form.synopsis);
             },
           }, t('AI 修改梗概', 'AI revise synopsis')),
           h('button', {
@@ -1685,20 +1658,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             type: 'button',
             disabled: !savedAt || Boolean(generating || composing) || !chapter,
             onClick: generate,
-          }, generating ? t('生成中…', "Generating…") : t('生成章节故事', "Generate chapter"))),
-        synopsisReviseOpen
-          ? h(SynopsisReviseDialog, {
-            chapter,
-            synopsis: form.synopsis,
-            busy: Boolean(revisingSynopsis),
-            error: synopsisReviseError,
-            onCancel: () => {
-              if (revisingSynopsis) return;
-              setSynopsisReviseOpen(false);
-            },
-            onConfirm: startSynopsisRevise,
-          })
-          : null);
+          }, generating ? t('生成中…', "Generating…") : t('生成章节故事', "Generate chapter"))));
     }
 
     /* --------------------------------------------------------- new chapter */
@@ -1933,6 +1893,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [reviseError, setReviseError] = useState('');
       const [reviseJob, setReviseJob] = useJob();
       const [summarizeJob, setSummarizeJob] = useJob();
+      // The synopsis rewrite lives here, not in OutlinePage: the page renders
+      // inside the translated track, where an absolutely positioned dialog would
+      // be painted off-screen.
+      const [synopsisTarget, setSynopsisTarget] = useState(null);
+      const [synopsisError, setSynopsisError] = useState('');
+      const [synopsisDraft, setSynopsisDraft] = useState(null);
+      const [synopsisJob, setSynopsisJob] = useJob();
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
@@ -2052,6 +2019,55 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [summarizeJob ? summarizeJob.jobId : null, summarizeJob ? summarizeJob.state : null, summarizeJob ? summarizeJob.message : null]);
 
       const revising = Boolean(reviseJob && reviseJob.state === 'running');
+
+      /** Run the synopsis rewrite for the chapter the outline page handed up. */
+      const sendSynopsisRevise = useCallback(async (instruction) => {
+        const target = synopsisTarget;
+        if (!target || !target.chapter) return;
+        if (String(target.synopsis || '').trim() === '') {
+          setSynopsisError(t('还没有故事梗概可改，先写一段再来', 'There is no synopsis yet — write one first.'));
+          return;
+        }
+        if (String(instruction || '').trim() === '') {
+          setSynopsisError(t('请先写清修改意见', 'Write what should change first.'));
+          return;
+        }
+        setSynopsisError('');
+        try {
+          const started = await api('/outline/revise', {
+            projectId: detail.projectId,
+            chapterId: target.chapter.chapterId,
+            synopsis: target.synopsis,
+            instruction: String(instruction).trim(),
+          });
+          setSynopsisJob(started);
+        } catch (error) {
+          setSynopsisError(messageOf(error));
+        }
+      }, [synopsisTarget, detail.projectId, notify, setSynopsisJob]);
+
+      const revisingSynopsis = Boolean(synopsisJob && synopsisJob.state === 'running');
+      useEffect(() => {
+        if (!synopsisJob) return undefined;
+        if (synopsisJob.state === 'running') {
+          setChildBusy({
+            label: t('正在按意见改写故事梗概…', 'Rewriting the synopsis…'),
+            message: synopsisJob.message || '',
+          });
+          return undefined;
+        }
+        setChildBusy(null);
+        if (synopsisJob.state === 'done') {
+          const text = (synopsisJob.result || {}).synopsis;
+          if (typeof text === 'string' && text.trim() !== '') setSynopsisDraft(text);
+          setSynopsisTarget(null);
+          notify(t('AI 已改写故事梗概，确认后点「保存」', 'AI rewrote the synopsis — review it, then press Save'), 'success');
+        } else if (synopsisJob.state === 'error') {
+          setSynopsisError(synopsisJob.error || t('改写失败', 'Revision failed'));
+        }
+        return undefined;
+      }, [synopsisJob ? synopsisJob.jobId : null, synopsisJob ? synopsisJob.state : null, synopsisJob ? synopsisJob.message : null]);
+
       useEffect(() => {
         if (!reviseJob) return undefined;
         if (reviseJob.state === 'running') {
@@ -2283,6 +2299,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               onRegisterGuard: registerOutlineGuard,
               requestConfirm: setConfirmRequest,
               onBusyChange: setChildBusy,
+              onReviseSynopsis: (synopsis) => {
+                setSynopsisError('');
+                setSynopsisTarget({ chapter, synopsis });
+              },
+              synopsisDraft,
+              onSynopsisDraftApplied: () => setSynopsisDraft(null),
+              revisingSynopsis,
               isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
         confirmRequest
@@ -2296,6 +2319,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               setConfirmRequest(null);
               await request.action();
             },
+          })
+          : null,
+        synopsisTarget
+          ? h(SynopsisReviseDialog, {
+            chapter: synopsisTarget.chapter,
+            synopsis: synopsisTarget.synopsis,
+            busy: revisingSynopsis,
+            error: synopsisError,
+            onCancel: () => {
+              if (revisingSynopsis) return;
+              setSynopsisTarget(null);
+              setSynopsisError('');
+            },
+            onConfirm: sendSynopsisRevise,
           })
           : null,
         reviseOpen

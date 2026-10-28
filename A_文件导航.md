@@ -193,3 +193,5 @@ README.md	|	2026-10-28 06:10	|	改写预设说明（配套包、两行、显示�
 index.js	|	2026-10-28 09:05	|	新增 /chapter/summarize（正文→梗概并保存覆盖）与 /outline/revise（按意见改写梗概，不保存）
 client.js	|	2026-10-28 09:05	|	章节故事页加「生成故事梗概」（确认后覆盖保存）；章节大纲页加「AI 修改梗概」弹窗
 package.json	|	2026-10-28 09:05	|	0.1.32
+client.js	|	2026-10-28 09:35	|	修复「AI 修改梗概」点击无反应：弹窗移到 workspace stage 渲染，避开被 transform/overflow 裁剪的轨道
+package.json	|	2026-10-28 09:35	|	0.1.33

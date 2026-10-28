@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-28.2',
+    revision: '2026-10-28.4',
     projects,
     models: {
       default: modelCatalog.default || null,
