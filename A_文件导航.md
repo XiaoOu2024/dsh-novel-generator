@@ -190,3 +190,6 @@ package.json	|	2026-10-28 05:30	|	0.1.30
 cordis.patch.yml	|	2026-10-28 06:10	|	预设行改指向配套包 dsh-novel-author-preset（由它运行时注册预设，插件列表显示自己的标题）
 package.json	|	2026-10-28 06:10	|	新增依赖 dsh-novel-author-preset ^0.3.0；版本 0.1.31
 README.md	|	2026-10-28 06:10	|	改写预设说明（配套包、两行、显示名）
+index.js	|	2026-10-28 09:05	|	新增 /chapter/summarize（正文→梗概并保存覆盖）与 /outline/revise（按意见改写梗概，不保存）
+client.js	|	2026-10-28 09:05	|	章节故事页加「生成故事梗概」（确认后覆盖保存）；章节大纲页加「AI 修改梗概」弹窗
+package.json	|	2026-10-28 09:05	|	0.1.32

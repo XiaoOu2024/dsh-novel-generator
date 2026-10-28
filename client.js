@@ -1251,7 +1251,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('修改中…', 'Revising…') : t('确认修改', 'Revise')))));
     }
 
-    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter, onRevise }) {
+    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter, onRevise, onSummarize, summarizing }) {
       const words = countWords(text);
       const window = chapter ? chapterWindow(detail, chapter) : null;
 
@@ -1296,6 +1296,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               h('button', {
                 className: 'dsn-btn',
                 type: 'button',
+                disabled: saving || Boolean(summarizing) || String(text || '').trim() === '',
+                title: String(text || '').trim() === ''
+                  ? t('这一章还没有正文，先写或先生成', 'No text yet — write or generate the chapter first')
+                  : t('用本章正文重新生成故事梗概，会覆盖现有梗概', 'Recreate the synopsis from this chapter’s text, replacing the current one'),
+                onClick: onSummarize,
+              }, summarizing ? t('生成梗概中…', 'Summarizing…') : t('生成故事梗概', 'Synopsis from text')),
+              h('button', {
+                className: 'dsn-btn',
+                type: 'button',
                 disabled: saving || String(text || '').trim() === '',
                 title: String(text || '').trim() === ''
                   ? t('这一章还没有正文，先写或先生成', 'No text yet — write or generate the chapter first')
@@ -1307,6 +1316,46 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     }
 
     /* ---------------------------------------------------------- outline page */
+
+    /**
+     * Ask the model to rewrite the chapter's synopsis from a note. Unlike the
+     * story page's dialog this one works on the outline, and the result comes back
+     * as an unsaved draft for the author to keep.
+     */
+    function SynopsisReviseDialog({ chapter, synopsis, busy, error, onCancel, onConfirm }) {
+      const [instruction, setInstruction] = useState('');
+      const ready = instruction.trim() !== '' && String(synopsis || '').trim() !== '';
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(560px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('AI 修改故事梗概', 'Revise the synopsis with AI')),
+            h('div', { className: 'dsn-sub' }, chapter ? t('第 {n} 章 · {title}', 'Chapter {n} · {title}', { n: chapter.index + 1, title: chapter.title || t('未命名', 'Untitled') }) : ''),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span4' },
+              h('span', { className: 'dsn-label' }, t('修改意见（必填）', 'What to change (required)')),
+              h('textarea', {
+                className: 'dsn-textarea',
+                style: { minHeight: '120px' },
+                value: instruction,
+                placeholder: t('针对「故事梗概」的意见，例如：把转折写得更明确，补上主角离开村庄的动机；删掉与主线无关的配角。', 'Notes about the synopsis itself, e.g. make the turn explicit, add the reason the hero leaves the village, drop the subplot that goes nowhere.'),
+                onChange: (event) => setInstruction(event.target.value),
+              })),
+            String(synopsis || '').trim() === ''
+              ? h('div', { className: 'dsn-hint warn span4' }, t('还没有故事梗概，先写一段再来让 AI 改。', 'There is no synopsis yet — write one before revising it.'))
+              : h('div', { className: 'dsn-hint span4' }, t('只改「故事梗概」，不动正文与章节名。结果填回梗概框但不自动保存。', 'Only the synopsis is rewritten; the text and title stay. The result fills the box unsaved.')),
+            error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', 'Cancel')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy || !ready,
+              onClick: () => onConfirm(instruction.trim()),
+            }, busy ? t('改写中…', 'Revising…') : t('确认修改', 'Revise')))));
+    }
 
     function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange }) {
       const buildForm = useCallback(() => ({
@@ -1411,6 +1460,34 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 
       const generating = job && job.state === 'running' && job.kind === 'generate';
       const composing = job && job.state === 'running' && job.kind === 'compose';
+      const revisingSynopsis = job && job.state === 'running' && job.kind === 'synopsis-revise';
+
+      /** AI 修改故事梗概: rewrite the synopsis from a note, keep it as a draft. */
+      const [synopsisReviseOpen, setSynopsisReviseOpen] = useState(false);
+      const [synopsisReviseError, setSynopsisReviseError] = useState('');
+      const startSynopsisRevise = useCallback(async (instruction) => {
+        if (!chapter) return;
+        if (String(form.synopsis || '').trim() === '') {
+          setSynopsisReviseError(t('还没有故事梗概可改，先写一段再来', 'There is no synopsis yet — write one first.'));
+          return;
+        }
+        if (String(instruction || '').trim() === '') {
+          setSynopsisReviseError(t('请先写清修改意见', 'Write what should change first.'));
+          return;
+        }
+        setSynopsisReviseError('');
+        try {
+          const started = await api('/outline/revise', {
+            projectId: detail.projectId,
+            chapterId: chapter.chapterId,
+            synopsis: form.synopsis,
+            instruction: String(instruction).trim(),
+          });
+          setJob(started);
+        } catch (error) {
+          setSynopsisReviseError(messageOf(error));
+        }
+      }, [detail.projectId, chapter, form.synopsis, setJob]);
 
       /** 自动推演: deduce synopsis, title and the whole chapter, then save. */
       const deduce = useCallback(() => {
@@ -1483,7 +1560,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           notify(t('已重新推演并保存章节', "Re-deduced and saved the chapter"), 'success');
           onSaved(chapter ? chapter.chapterId : null);
         }
+        if (job.kind === 'synopsis-revise' && job.state === 'done') {
+          const result = job.result || {};
+          if (typeof result.synopsis === 'string' && result.synopsis.trim() !== '') {
+            setForm((current) => ({ ...current, synopsis: result.synopsis }));
+            setDirty(true);
+          }
+          setSynopsisReviseOpen(false);
+          notify(t('AI 已改写故事梗概，确认后点「保存」', 'AI rewrote the synopsis — review it, then press Save'), 'success');
+        }
         if (job.state === 'error') {
+          if (job.kind === 'synopsis-revise') setSynopsisReviseError(job.error || t('改写失败', 'Revision failed'));
           notify(job.error || t('任务失败', "Task failed"), 'error');
         }
       }, [job ? job.jobId : null, job ? job.state : null]);
@@ -1494,6 +1581,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           h('div', { className: 'dsn-title' }, chapter ? t('章节大纲 · 第 {n} 章', 'Outline · chapter {n}', { n: chapter.index + 1 }) : t('章节大纲 · 新章节', "Outline · new chapter")),
           h('div', { className: 'dsn-sub' }, t('起始 第 {day} 天', 'Starts day {day}', { day: chapter ? chapterWindow(detail, chapter).start : (detail.timeline.cursor || 0) })),
           h('div', { className: 'dsn-spacer' }),
+          h('button', {
+            className: 'dsn-btn ghost',
+            type: 'button',
+            disabled: !chapter || String(form.synopsis || '').trim() === '' || saving || Boolean(generating || composing || revisingSynopsis),
+            title: String(form.synopsis || '').trim() === ''
+              ? t('还没有故事梗概可改', 'There is no synopsis to revise yet')
+              : t('让 AI 按修改意见改写「故事梗概」（不动正文）', 'Let AI rewrite the synopsis from your notes (the chapter text stays)'),
+            onClick: () => {
+              setSynopsisReviseError('');
+              setSynopsisReviseOpen(true);
+            },
+          }, t('AI 修改梗概', 'AI revise synopsis')),
           h('button', {
             className: 'dsn-btn ghost',
             type: 'button',
@@ -1586,7 +1685,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             type: 'button',
             disabled: !savedAt || Boolean(generating || composing) || !chapter,
             onClick: generate,
-          }, generating ? t('生成中…', "Generating…") : t('生成章节故事', "Generate chapter"))));
+          }, generating ? t('生成中…', "Generating…") : t('生成章节故事', "Generate chapter"))),
+        synopsisReviseOpen
+          ? h(SynopsisReviseDialog, {
+            chapter,
+            synopsis: form.synopsis,
+            busy: Boolean(revisingSynopsis),
+            error: synopsisReviseError,
+            onCancel: () => {
+              if (revisingSynopsis) return;
+              setSynopsisReviseOpen(false);
+            },
+            onConfirm: startSynopsisRevise,
+          })
+          : null);
     }
 
     /* --------------------------------------------------------- new chapter */
@@ -1820,6 +1932,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [reviseOpen, setReviseOpen] = useState(false);
       const [reviseError, setReviseError] = useState('');
       const [reviseJob, setReviseJob] = useJob();
+      const [summarizeJob, setSummarizeJob] = useJob();
       const [text, setText] = useState('');
       const [dirty, setDirty] = useState(false);
       const [saving, setSaving] = useState(false);
@@ -1891,6 +2004,52 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           setReviseError(messageOf(error));
         }
       }, [chapter, detail.projectId, text, setReviseJob]);
+
+      /** 生成故事梗概: read the prose and overwrite the stored synopsis. */
+      const summarizeChapter = useCallback(() => {
+        if (!chapter) return;
+        if (String(text || '').trim() === '') {
+          notify(t('这一章还没有正文，先写或先生成再生成梗概', 'This chapter has no text yet — write or generate it first.'), 'error');
+          return;
+        }
+        setConfirmRequest({
+          title: t('是否以当前章节故事生成故事梗概？', 'Create the synopsis from this chapter’s text?'),
+          text: t('会用当前正文生成一段新的故事梗概，并「直接保存、覆盖原有梗概」。正文不会被修改。', 'A new synopsis is generated from the text and saved immediately, replacing the existing one. The chapter text itself is untouched.'),
+          confirmLabel: t('生成并覆盖', 'Generate and replace'),
+          action: async () => {
+            try {
+              const started = await api('/chapter/summarize', {
+                projectId: detail.projectId,
+                chapterId: chapter.chapterId,
+                content: text,
+              });
+              setSummarizeJob(started);
+            } catch (error) {
+              notify(messageOf(error), 'error');
+            }
+          },
+        });
+      }, [chapter, detail.projectId, text, notify, setConfirmRequest, setSummarizeJob]);
+
+      const summarizing = Boolean(summarizeJob && summarizeJob.state === 'running');
+      useEffect(() => {
+        if (!summarizeJob) return undefined;
+        if (summarizeJob.state === 'running') {
+          setChildBusy({
+            label: t('正在用正文生成故事梗概…', 'Building the synopsis from the text…'),
+            message: summarizeJob.message || '',
+          });
+          return undefined;
+        }
+        setChildBusy(null);
+        if (summarizeJob.state === 'done') {
+          notify(t('已用正文生成并保存故事梗概', 'Synopsis generated from the text and saved'), 'success');
+          onReload();
+        } else if (summarizeJob.state === 'error') {
+          notify(summarizeJob.error || t('生成梗概失败', 'Building the synopsis failed'), 'error');
+        }
+        return undefined;
+      }, [summarizeJob ? summarizeJob.jobId : null, summarizeJob ? summarizeJob.state : null, summarizeJob ? summarizeJob.message : null]);
 
       const revising = Boolean(reviseJob && reviseJob.state === 'running');
       useEffect(() => {
@@ -2108,6 +2267,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 setReviseError('');
                 setReviseOpen(true);
               },
+              onSummarize: summarizeChapter,
+              summarizing: Boolean(summarizeJob && summarizeJob.state === 'running'),
             })),
           h('section', { className: 'dsn-page' },
             h(OutlinePage, {

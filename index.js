@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-27.17',
+    revision: '2026-10-28.2',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2010,6 +2010,127 @@ async function updatePreset(ctx, root, body) {
   });
   await exportProjectInfo(await readProject(root, projectId));
   return { project, appliesAfterRebuild: true };
+}
+
+/** Prompt for turning a chapter's prose back into its synopsis. */
+function summarizePrompt(project, chapter, prose) {
+  const span = chapterWindow(project, chapter);
+  const lines = [];
+  lines.push('你是这部小说的编辑。请把下面这一章的正文压缩成一段章节梗概。');
+  lines.push('只输出梗概本身：不要标题、不要分点、不要解释、不要评价，300 字以内。');
+  lines.push('梗概要写清起因、经过、转折与结果，供后续章节与世界观使用。');
+  lines.push('');
+  const prelude = preludeBlock(project);
+  if (prelude !== '') lines.push(prelude);
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
+  lines.push('');
+  lines.push('【正文】');
+  lines.push(prose);
+  return lines.join('\n');
+}
+
+/** Prompt for rewriting a synopsis from the author's note. */
+function synopsisRevisePrompt(project, chapter, synopsis, instruction) {
+  const lines = [];
+  lines.push('你是这部小说的编辑。下面是本章现有的故事梗概，以及作者给出的修改意见。');
+  lines.push('请按修改意见改写这段梗概，输出改写后的**完整梗概**：不要解释、不要列改动点、不要标题，300 字以内。');
+  lines.push('');
+  const prelude = preludeBlock(project);
+  if (prelude !== '') lines.push(prelude);
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}`);
+  lines.push('');
+  lines.push('【现有梗概】');
+  lines.push(synopsis);
+  lines.push('');
+  lines.push('【修改意见】');
+  lines.push(instruction);
+  lines.push('');
+  lines.push('【要求】');
+  lines.push('- 没被意见推翻的情节保留；与正文一致的事实不要改。');
+  lines.push('- 只输出梗概正文，不要加「梗概：」之类的前缀。');
+  return lines.join('\n');
+}
+
+/** Trim a model-written blurb down to plain synopsis text. */
+function cleanSynopsis(text) {
+  return String(text || '')
+    .replace(/^\s*#{1,6}\s*[^\n]*\n+/u, '')
+    .replace(/^\s*梗概[：:]\s*/u, '')
+    .replace(/^```[a-z]*\n?/u, '')
+    .replace(/\n?```\s*$/u, '')
+    .trim();
+}
+
+/**
+ * Turn a chapter's prose into its synopsis and save it.
+ *
+ * This is the one place a generated summary overwrites the stored one, so the
+ * Client asks before calling it: an author's own synopsis is the expensive part
+ * of an outline, and replacing it is never silent.
+ */
+async function startSummarize(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const chapterId = asText(body.chapterId);
+  const prose = typeof body.content === 'string' ? body.content : '';
+  if (prose.trim() === '') throw httpError(400, '这一章还没有正文，无法生成梗概');
+  const preview = await readProject(root, projectId);
+  if (!preview.chapters.some((entry) => entry.chapterId === chapterId)) {
+    throw httpError(404, `章节不存在: ${chapterId}`);
+  }
+  return startJob(registry, { kind: 'summarize', projectId, chapterId }, async (job) => {
+    const project = await readProject(root, projectId);
+    const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
+    if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
+    job.message = '正在读正文生成梗概';
+    const raw = await askStory(ctx, root, project, summarizePrompt(project, chapter, prose), (note) => {
+      job.message = note;
+    });
+    const synopsis = cleanSynopsis(raw);
+    if (synopsis === '') throw httpError(502, '模型没有给出梗概');
+    const saved = await mutateProject(root, projectId, (draft) => {
+      const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
+      if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
+      const previous = target.outline || {};
+      target.outline = {
+        ...previous,
+        minWords: previous.minWords || 800,
+        maxWords: previous.maxWords || 3000,
+        durationDays: previous.durationDays || target.durationDays,
+        synopsisMinChars: previous.synopsisMinChars || 100,
+        synopsis,
+        savedAt: Date.now(),
+      };
+      target.updatedAt = Date.now();
+      return { chapter: { ...target, content: undefined }, project: summarize(draft) };
+    });
+    await exportChapterOutline(await readProject(root, projectId), saved.chapter);
+    await exportProjectInfo(await readProject(root, projectId));
+    return { synopsis, chapter: saved.chapter };
+  });
+}
+
+/** Rewrite one chapter's synopsis from a note, without saving it. */
+async function startSynopsisRevise(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const chapterId = asText(body.chapterId);
+  const synopsis = typeof body.synopsis === 'string' ? body.synopsis : '';
+  const instruction = asText(body.instruction);
+  if (synopsis.trim() === '') throw httpError(400, '还没有故事梗概可改，先写一段再来');
+  if (instruction === '') throw httpError(400, '请先写清修改意见');
+  const preview = await readProject(root, projectId);
+  const claimed = preview.chapters.find((entry) => entry.chapterId === chapterId);
+  if (!claimed) throw httpError(404, `章节不存在: ${chapterId}`);
+  return startJob(registry, { kind: 'synopsis-revise', projectId, chapterId }, async (job) => {
+    const project = await readProject(root, projectId);
+    const chapter = project.chapters.find((entry) => entry.chapterId === chapterId) || claimed;
+    job.message = '正在按意见改写梗概';
+    const raw = await askStory(ctx, root, project, synopsisRevisePrompt(project, chapter, synopsis, instruction), (note) => {
+      job.message = note;
+    });
+    const revised = cleanSynopsis(raw);
+    if (revised === '') throw httpError(502, '模型没有给出梗概');
+    return { synopsis: revised, chars: revised.length };
+  });
 }
 
 async function updateTimeline(root, body) {
@@ -2806,6 +2927,10 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startGenerate(ctx, root, registry, body);
     case '/chapter/revise':
       return startRevise(ctx, root, registry, body);
+    case '/chapter/summarize':
+      return startSummarize(ctx, root, registry, body);
+    case '/outline/revise':
+      return startSynopsisRevise(ctx, root, registry, body);
     case '/compose':
       return startCompose(ctx, root, registry, body);
     case '/deduce':
