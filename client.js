@@ -661,6 +661,62 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, t('停止', 'Stop')))));
     }
 
+    /**
+     * The style profile an extraction produced. It is shown read-only with a copy
+     * button, and can be folded into the work's preface — that second step asks
+     * the model to tidy the merge, which the confirm says out loud.
+     */
+    function StyleDialog({ style, source, busy, error, onCancel, onApply, requestConfirm }) {
+      const [copied, setCopied] = useState(false);
+      const copy = useCallback(async () => {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(style);
+          } else {
+            throw new Error('clipboard unavailable');
+          }
+          setCopied(true);
+        } catch {
+          setCopied(false);
+        }
+      }, [style]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(640px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('提取到的行文风格', 'Extracted writing style')),
+            h('div', { className: 'dsn-sub' }, source ? t('来源：{src} · {n} 字', 'From {src} · {n} characters', { src: source, n: style.length }) : ''),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('label', { className: 'dsn-field span4' },
+              h('span', { className: 'dsn-label' }, t('可以直接复制到作品列表的「前置」里', 'Copy it into the work’s preface')),
+              h('textarea', { className: 'dsn-textarea', style: { minHeight: '220px' }, value: style, readOnly: true })),
+            h('div', { className: 'dsn-hint span4' }, t('也可以点「写入前置」：插件会让模型把这段风格和你现有前置整理成一段统一的写作约束，再保存。', 'Or press “Write into preface”: the model merges this profile with your current preface into one set of rules, then saves it.')),
+            error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('关闭', 'Close')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              disabled: busy,
+              onClick: copy,
+            }, copied ? t('已复制', 'Copied') : t('复制', 'Copy')),
+            h('button', {
+              className: 'dsn-btn primary',
+              type: 'button',
+              disabled: busy,
+              onClick: () => {
+                requestConfirm({
+                  title: t('写入前置会调用 AI 整理', 'Writing the preface uses the model'),
+                  text: t('插件会让模型把这段行文风格与你现有的前置提示词整理成一段统一的写作约束，然后覆盖保存为本书前置。整理需要一次模型调用。继续吗？', 'The model merges this style profile with your current preface into one set of rules and saves it as this work’s preface, replacing the current one. It takes one model call. Continue?'),
+                  confirmLabel: t('整理并写入', 'Merge and write'),
+                  action: onApply,
+                });
+              },
+            }, busy ? t('整理中…', 'Merging…') : t('写入前置', 'Write into preface')))));
+    }
+
     function PresetDialog({ project, presets, onCancel, onSaved }) {
       const [preset, setPreset] = useState(project.agentPreset || '');
       const [busy, setBusy] = useState(false);
@@ -1489,7 +1545,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('修改中…', 'Revising…') : t('确认修改', 'Revise')))));
     }
 
-    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter, onRevise, onSummarize, summarizing }) {
+    function StoryPage({ detail, chapter, previous, next, text, saving, onEdit, onSave, onBack, onOutline, onOpenChapter, onNewChapter, onRevise, onSummarize, summarizing, onExtractStyle, extractingStyle }) {
       const words = countWords(text);
       const window = chapter ? chapterWindow(detail, chapter) : null;
 
@@ -1540,6 +1596,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   : t('用本章正文重写梗概，并同步时间长度、字数范围与梗概下限（覆盖旧大纲）', 'Rewrite the synopsis from this chapter and re-measure its duration, word bounds and synopsis floor, replacing the old outline'),
                 onClick: onSummarize,
               }, summarizing ? t('同步大纲中…', 'Syncing…') : t('同步章节大纲', 'Sync outline')),
+              h('button', {
+                className: 'dsn-btn',
+                type: 'button',
+                disabled: saving || Boolean(extractingStyle || summarizing) || countWords(text) < 300,
+                title: countWords(text) < 300
+                  ? t('正文不足 300 字，提取出来的风格不可靠', 'Fewer than 300 characters — a style profile would not be reliable')
+                  : t('让模型读这一章，提炼叙事视角、句式、用词与节奏，可复制到作品前置', 'Let the model read this chapter and describe its viewpoint, sentences, wording and rhythm, ready to paste into the work’s preface'),
+                onClick: onExtractStyle,
+              }, extractingStyle ? t('分析中…', 'Analysing…') : t('提取行文风格', 'Extract style')),
               h('button', {
                 className: 'dsn-btn',
                 type: 'button',
@@ -2131,6 +2196,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [reviseError, setReviseError] = useState('');
       const [reviseJob, setReviseJob] = useJob();
       const [summarizeJob, setSummarizeJob] = useJob();
+      const [styleJob, setStyleJob] = useJob();
+      const [styleApplyJob, setStyleApplyJob] = useJob();
+      const [styleResult, setStyleResult] = useState(null);
+      const [styleError, setStyleError] = useState('');
       // The synopsis rewrite lives here, not in OutlinePage: the page renders
       // inside the translated track, where an absolutely positioned dialog would
       // be painted off-screen.
@@ -2271,6 +2340,86 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [summarizeJob ? summarizeJob.jobId : null, summarizeJob ? summarizeJob.state : null, summarizeJob ? summarizeJob.message : null]);
 
       const revising = Boolean(reviseJob && reviseJob.state === 'running');
+
+      /** 提取行文风格: the model reads this chapter and describes how it is written. */
+      const extractStyle = useCallback(() => {
+        if (!chapter) return;
+        if (countWords(text) < 300) {
+          notify(t('正文不足 300 字，提取出来的风格不可靠', 'Fewer than 300 characters — a style profile would not be reliable'), 'error');
+          return;
+        }
+        setStyleError('');
+        (async () => {
+          try {
+            const started = await api('/style/extract', {
+              projectId: detail.projectId,
+              chapterId: chapter.chapterId,
+              content: text,
+            });
+            setStyleJob(started);
+          } catch (error) {
+            notify(messageOf(error), 'error');
+          }
+        })();
+      }, [chapter, detail.projectId, text, notify, setStyleJob]);
+
+      const extractingStyle = Boolean(styleJob && styleJob.state === 'running');
+      useEffect(() => {
+        if (!styleJob) return undefined;
+        if (styleJob.state === 'running') {
+          setChildBusy({
+            label: t('正在分析行文风格，期间无法操作…', 'Analysing the writing style — the studio is locked meanwhile…'),
+            message: styleJob.message || '',
+          });
+          return undefined;
+        }
+        setChildBusy(null);
+        if (styleJob.state === 'done') {
+          const result = styleJob.result || {};
+          if (result.style) {
+            setStyleResult({ style: result.style, source: result.source || '' });
+            setStyleError('');
+          }
+        } else if (styleJob.state === 'error') {
+          notify(styleJob.error || t('提取行文风格失败', 'Extracting the style failed'), 'error');
+        }
+        return undefined;
+      }, [styleJob ? styleJob.jobId : null, styleJob ? styleJob.state : null, styleJob ? styleJob.message : null]);
+
+      const applyingStyle = Boolean(styleApplyJob && styleApplyJob.state === 'running');
+      const applyStyleToPrelude = useCallback(async () => {
+        if (!styleResult) return;
+        setStyleError('');
+        try {
+          const started = await api('/style/apply', {
+            projectId: detail.projectId,
+            style: styleResult.style,
+          });
+          setStyleApplyJob(started);
+        } catch (error) {
+          setStyleError(messageOf(error));
+        }
+      }, [styleResult, detail.projectId, setStyleApplyJob]);
+
+      useEffect(() => {
+        if (!styleApplyJob) return undefined;
+        if (styleApplyJob.state === 'running') {
+          setChildBusy({
+            label: t('AI 正在把风格整理进前置提示词…', 'The model is folding the style into the preface…'),
+            message: styleApplyJob.message || '',
+          });
+          return undefined;
+        }
+        setChildBusy(null);
+        if (styleApplyJob.state === 'done') {
+          setStyleResult(null);
+          notify(t('已整理并写入本书前置，下一次生成就生效', 'Merged into this work’s preface — it applies to the next generation'), 'success');
+          onReload();
+        } else if (styleApplyJob.state === 'error') {
+          setStyleError(styleApplyJob.error || t('写入前置失败', 'Writing the preface failed'));
+        }
+        return undefined;
+      }, [styleApplyJob ? styleApplyJob.jobId : null, styleApplyJob ? styleApplyJob.state : null, styleApplyJob ? styleApplyJob.message : null]);
 
       /** Run the synopsis rewrite for the chapter the outline page handed up. */
       const sendSynopsisRevise = useCallback(async (instruction) => {
@@ -2537,6 +2686,8 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               },
               onSummarize: syncOutline,
               summarizing: Boolean(summarizeJob && summarizeJob.state === 'running'),
+              onExtractStyle: extractStyle,
+              extractingStyle,
             })),
           h('section', { className: 'dsn-page' },
             h(OutlinePage, {
@@ -2560,6 +2711,21 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               revisingSynopsis,
               isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
+        styleResult || applyingStyle
+          ? h(StyleDialog, {
+            style: styleResult ? styleResult.style : '',
+            source: styleResult ? styleResult.source : '',
+            busy: applyingStyle,
+            error: styleError,
+            requestConfirm: setConfirmRequest,
+            onCancel: () => {
+              if (applyingStyle) return;
+              setStyleResult(null);
+              setStyleError('');
+            },
+            onApply: applyStyleToPrelude,
+          })
+          : null,
         confirmRequest
           ? h(ConfirmDialog, {
             title: confirmRequest.title,

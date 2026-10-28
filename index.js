@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-28.9',
+    revision: '2026-10-28.10',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2446,6 +2446,113 @@ async function startImportChapters(ctx, root, registry, body) {
   });
 }
 
+/* ------------------------------------------------------- style extraction */
+
+/** A chapter needs this much prose before a style profile means anything. */
+const STYLE_MIN_CHARS = 300;
+/** Extracted profiles stay short so they fit in front of every request. */
+const STYLE_MAX_CHARS = 600;
+
+function styleExtractPrompt(project, chapter, prose) {
+  const span = chapterWindow(project, chapter);
+  const lines = [];
+  lines.push('你是这部小说的文字编辑。请从下面这段正文里提取这篇小说的行文风格，写成可以直接当作「写作约束」使用的条目。');
+  lines.push('');
+  lines.push('要覆盖：');
+  lines.push('- 叙事视角与人称（第三人称全知 / 第三人称限知、叙述者的位置、是否贴身 POV）；');
+  lines.push('- 句长与句式（长句铺陈还是短句推进、是否大量并列）；');
+  lines.push('- 用词偏好（书面/口语、有无文言味、是否爱用四字词）；');
+  lines.push('- 节奏（场景推进、动作、心理描写的比重）；');
+  lines.push('- 描写重心与感官用法（环境、动作、对话、内心各占多少，感官是融入环境还是单独成段）；');
+  lines.push('- 标志性的修辞或语气（有没有固定的叙述腔调、常用的比喻方式）。');
+  lines.push('');
+  lines.push('写法要求：');
+  lines.push('- 每条一行，用「· 」开头，短句直述，像给写手的规矩，不要写成文学评论；');
+  lines.push('- 不要出现「这段文字」「作者」之类的话，也不要评价好坏；');
+  lines.push(`- 全文不超过 ${STYLE_MAX_CHARS} 字，宁可少写几条也要写得可执行。`);
+  lines.push('');
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
+  lines.push('【正文】');
+  lines.push(prose);
+  return lines.join('\n');
+}
+
+function styleMergePrompt(existing, style) {
+  const lines = [];
+  lines.push('你是这部小说的编辑。下面是这部作品现有的【前置提示词】，和刚从正文里提炼出的【行文风格】。');
+  lines.push('请把它们整理成一段统一的前置提示词，供每次写作时放在提示最前面：');
+  lines.push('');
+  lines.push('要求：');
+  lines.push('- 现有前置里仍然有效的内容要保留（例如作者自己写的题材、禁忌、写作要求）；');
+  lines.push('- 与行文风格重复或冲突的表述合并，以正文实测出的风格为准；');
+  lines.push('- 分条书写，条目要可执行（能直接约束写手的句子），不要出现「提取」「风格分析」这类字眼；');
+  lines.push(`- 全文不超过 ${PRELUDE_MAX_CHARS} 字，只输出整理后的前置提示词本身。`);
+  lines.push('');
+  lines.push('【现有前置提示词】');
+  lines.push(existing.trim() === '' ? '（暂无）' : existing.trim());
+  lines.push('');
+  lines.push('【行文风格】');
+  lines.push(style.trim());
+  return lines.join('\n');
+}
+
+/** Read the prose and hand back a style profile the author can put in the preface. */
+async function startStyleExtract(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const chapterId = asText(body.chapterId);
+  const prose = typeof body.content === 'string' ? body.content : '';
+  if (wordCount(prose) < STYLE_MIN_CHARS) {
+    throw httpError(400, `正文不足 ${STYLE_MIN_CHARS} 字，提取出来的风格不可靠`);
+  }
+  const preview = await readProject(root, projectId);
+  if (!preview.chapters.some((entry) => entry.chapterId === chapterId)) {
+    throw httpError(404, `章节不存在: ${chapterId}`);
+  }
+  return startJob(registry, { kind: 'style-extract', projectId, chapterId }, async (job) => {
+    const project = await readProject(root, projectId);
+    const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
+    if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
+    job.message = '正在读正文提取行文风格';
+    const raw = await askStory(ctx, root, project, styleExtractPrompt(project, chapter, prose), (note) => {
+      job.message = note;
+    });
+    let style = cleanSynopsis(raw);
+    if (style === '') throw httpError(502, '模型没有给出风格说明');
+    if (style.length > STYLE_MAX_CHARS) style = `${style.slice(0, STYLE_MAX_CHARS - 1)}…`;
+    return { style, chars: style.length, source: chapter.title || `第 ${chapter.index + 1} 章` };
+  });
+}
+
+/**
+ * Fold an extracted profile into the work's preface, letting the model tidy the
+ * result: the author's own preface text usually overlaps the profile in wording
+ * but not in detail, and the merged version has to read as one set of rules.
+ */
+async function startStyleApply(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const style = typeof body.style === 'string' ? body.style.trim() : '';
+  if (style === '') throw httpError(400, '没有可写入的风格说明');
+  await readProject(root, projectId);
+  return startJob(registry, { kind: 'style-apply', projectId }, async (job) => {
+    const project = await readProject(root, projectId);
+    const existing = project.prelude && project.prelude.text ? String(project.prelude.text) : '';
+    job.message = '正在把风格整理进前置提示词';
+    const raw = await askStory(ctx, root, project, styleMergePrompt(existing, style), (note) => {
+      job.message = note;
+    });
+    let merged = cleanSynopsis(raw);
+    if (merged === '') throw httpError(502, '模型没有给整理后的前置提示词');
+    if (merged.length > PRELUDE_MAX_CHARS) merged = merged.slice(0, PRELUDE_MAX_CHARS).trim();
+    await mutateProject(root, projectId, (draft) => {
+      draft.prelude = { mode: 'custom', text: merged, updatedAt: Date.now() };
+      draft.updatedAt = Date.now();
+      return summarize(draft);
+    });
+    await exportProjectInfo(await readProject(root, projectId));
+    return { prelude: merged, chars: merged.length };
+  });
+}
+
 async function updateTimeline(root, body) {
   const projectId = asText(body.projectId);
   const unitDays = Number(body.unitDays);
@@ -3244,6 +3351,10 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startSyncOutline(ctx, root, registry, body);
     case '/import/scan':
       return scanImportChapters(root, body);
+    case '/style/extract':
+      return startStyleExtract(ctx, root, registry, body);
+    case '/style/apply':
+      return startStyleApply(ctx, root, registry, body);
     case '/import/apply':
       return startImportChapters(ctx, root, registry, body);
     case '/outline/revise':
