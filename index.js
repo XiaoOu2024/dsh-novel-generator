@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-28.4',
+    revision: '2026-10-28.5',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2012,19 +2012,28 @@ async function updatePreset(ctx, root, body) {
   return { project, appliesAfterRebuild: true };
 }
 
-/** Prompt for turning a chapter's prose back into its synopsis. */
-function summarizePrompt(project, chapter, prose) {
+/**
+ * Prompt for syncing a written chapter back into its outline: the synopsis plus
+ * the four numbers the outline records, all measured from this one chapter.
+ */
+function syncOutlinePrompt(project, chapter, prose) {
   const span = chapterWindow(project, chapter);
+  const chars = wordCount(prose);
   const lines = [];
-  lines.push('你是这部小说的编辑。请把下面这一章的正文压缩成一段章节梗概。');
-  lines.push('只输出梗概本身：不要标题、不要分点、不要解释、不要评价，300 字以内。');
-  lines.push('梗概要写清起因、经过、转折与结果，供后续章节与世界观使用。');
+  lines.push('你是这部小说的编辑。作者已经写完了下面这一章，请据此同步它的章节大纲。');
+  lines.push('读正文，输出一个 JSON 对象，不要输出别的文字、不要代码块：');
+  lines.push('{"synopsis":"……","durationDays":N,"minWords":N,"maxWords":N,"synopsisMinChars":N}');
+  lines.push('');
+  lines.push('各项含义：');
+  lines.push('- synopsis：这一章的故事梗概，写清起因、经过、转折、结果，供后续章节与世界观使用；300 字以内，纯文本。');
+  lines.push(`- durationDays：这段剧情在故事里覆盖的天数，整数 1–365。当前记为第 ${span.start}→${span.end} 天（共 ${span.end - span.start} 天），按正文实际推进判断是否需要改。`);
+  lines.push(`- minWords / maxWords：这一章应有的字数下限与上限，整数；本章正文实际 ${chars} 字，范围应当把 ${chars} 包在里面。`);
+  lines.push('- synopsisMinChars：上面这段梗概算「合格」的最低字数，整数 20–400，取梗概长度的八成左右。');
   lines.push('');
   const prelude = preludeBlock(project);
   if (prelude !== '') lines.push(prelude);
   lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
-  lines.push('');
-  lines.push('【正文】');
+  lines.push(`【正文】（共 ${chars} 字，不含空白）`);
   lines.push(prose);
   return lines.join('\n');
 }
@@ -2062,50 +2071,106 @@ function cleanSynopsis(text) {
 }
 
 /**
- * Turn a chapter's prose into its synopsis and save it.
+ * Sync a written chapter back into its outline.
  *
- * This is the one place a generated summary overwrites the stored one, so the
- * Client asks before calling it: an author's own synopsis is the expensive part
- * of an outline, and replacing it is never silent.
+ * Everything the outline records is re-measured from the finished chapter: the
+ * synopsis, the story duration, the word bounds and the synopsis floor. This is
+ * the one place generated values overwrite what the author had, so the Client
+ * asks first: an outline is the material every later generation leans on.
  */
-async function startSummarize(ctx, root, registry, body) {
+async function startSyncOutline(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
   const prose = typeof body.content === 'string' ? body.content : '';
-  if (prose.trim() === '') throw httpError(400, '这一章还没有正文，无法生成梗概');
+  if (prose.trim() === '') throw httpError(400, '这一章还没有正文，无法同步章节大纲');
   const preview = await readProject(root, projectId);
   if (!preview.chapters.some((entry) => entry.chapterId === chapterId)) {
     throw httpError(404, `章节不存在: ${chapterId}`);
   }
-  return startJob(registry, { kind: 'summarize', projectId, chapterId }, async (job) => {
+  return startJob(registry, { kind: 'sync-outline', projectId, chapterId }, async (job) => {
     const project = await readProject(root, projectId);
     const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
-    job.message = '正在读正文生成梗概';
-    const raw = await askStory(ctx, root, project, summarizePrompt(project, chapter, prose), (note) => {
+    job.message = '正在读正文同步章节大纲';
+    const raw = await askAgent(ctx, root, project, syncOutlinePrompt(project, chapter, prose), (note) => {
       job.message = note;
     });
-    const synopsis = cleanSynopsis(raw);
+    const parsed = parseJsonReply(raw) || {};
+    const chars = wordCount(prose);
+    // A reply without usable JSON still yields a synopsis: the model's prose is
+    // the summary, and the numbers fall back to what the chapter actually is.
+    const synopsis = cleanSynopsis(
+      typeof parsed.synopsis === 'string' && parsed.synopsis.trim() !== '' ? parsed.synopsis : raw,
+    );
     if (synopsis === '') throw httpError(502, '模型没有给出梗概');
+
+    const previous = chapter.outline || {};
+    const span = chapterWindow(project, chapter);
+    const notes = [];
+
+    // Word bounds must contain what was actually written, whatever the model said.
+    const floorHundred = (value) => Math.max(1, Math.floor(value / 100) * 100);
+    const ceilHundred = (value) => Math.max(200, Math.ceil(value / 100) * 100);
+    let minWords = Number.isFinite(Number(parsed.minWords)) ? Math.max(1, Math.round(Number(parsed.minWords))) : 0;
+    let maxWords = Number.isFinite(Number(parsed.maxWords)) ? Math.max(1, Math.round(Number(parsed.maxWords))) : 0;
+    if (minWords <= 0 || minWords > chars) minWords = floorHundred(chars * 0.9);
+    if (maxWords <= 0 || maxWords < chars) maxWords = ceilHundred(chars * 1.1);
+    if (maxWords < minWords) maxWords = minWords + 100;
+
+    // The synopsis floor has to stay reachable by the synopsis it was measured on.
+    let synopsisMinChars = Number.isFinite(Number(parsed.synopsisMinChars))
+      ? Math.round(Number(parsed.synopsisMinChars))
+      : Math.max(20, Math.floor(synopsis.length * 0.8));
+    synopsisMinChars = Math.max(20, Math.min(400, synopsisMinChars));
+    synopsisMinChars = Math.max(1, Math.min(synopsisMinChars, synopsis.length));
+
+    // A new duration only lands when it keeps the next chapter where it is.
+    let durationDays = chapter.durationDays;
+    const proposed = Number.isFinite(Number(parsed.durationDays))
+      ? Math.max(1, Math.min(365, Math.round(Number(parsed.durationDays))))
+      : null;
+    if (proposed !== null && proposed !== chapter.durationDays) {
+      const following = (project.chapters || [])
+        .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay >= span.start)
+        .sort((a, b) => a.startDay - b.startDay)[0] || null;
+      if (following === null) {
+        durationDays = proposed;
+      } else if (following.startDay === span.start + proposed) {
+        durationDays = proposed;
+      } else {
+        notes.push(`下一章从第 ${following.startDay} 天开始，改时长会错位，时间长度保持 ${chapter.durationDays} 天（模型建议 ${proposed} 天）`);
+      }
+    }
+
     const saved = await mutateProject(root, projectId, (draft) => {
       const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
       if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
-      const previous = target.outline || {};
       target.outline = {
         ...previous,
-        minWords: previous.minWords || 800,
-        maxWords: previous.maxWords || 3000,
-        durationDays: previous.durationDays || target.durationDays,
-        synopsisMinChars: previous.synopsisMinChars || 100,
         synopsis,
+        minWords,
+        maxWords,
+        durationDays,
+        synopsisMinChars,
         savedAt: Date.now(),
       };
+      target.durationDays = durationDays;
       target.updatedAt = Date.now();
       return { chapter: { ...target, content: undefined }, project: summarize(draft) };
     });
-    await exportChapterOutline(await readProject(root, projectId), saved.chapter);
-    await exportProjectInfo(await readProject(root, projectId));
-    return { synopsis, chapter: saved.chapter };
+    const fresh = await readProject(root, projectId);
+    await exportChapterOutline(fresh, saved.chapter);
+    await exportProjectInfo(fresh);
+    return {
+      synopsis,
+      minWords,
+      maxWords,
+      durationDays,
+      synopsisMinChars,
+      chars,
+      notes,
+      chapter: saved.chapter,
+    };
   });
 }
 
@@ -2927,8 +2992,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startGenerate(ctx, root, registry, body);
     case '/chapter/revise':
       return startRevise(ctx, root, registry, body);
-    case '/chapter/summarize':
-      return startSummarize(ctx, root, registry, body);
+    case '/chapter/sync-outline':
+      return startSyncOutline(ctx, root, registry, body);
     case '/outline/revise':
       return startSynopsisRevise(ctx, root, registry, body);
     case '/compose':

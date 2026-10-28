@@ -1299,9 +1299,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 disabled: saving || Boolean(summarizing) || String(text || '').trim() === '',
                 title: String(text || '').trim() === ''
                   ? t('这一章还没有正文，先写或先生成', 'No text yet — write or generate the chapter first')
-                  : t('用本章正文重新生成故事梗概，会覆盖现有梗概', 'Recreate the synopsis from this chapter’s text, replacing the current one'),
+                  : t('用本章正文重写梗概，并同步时间长度、字数范围与梗概下限（覆盖旧大纲）', 'Rewrite the synopsis from this chapter and re-measure its duration, word bounds and synopsis floor, replacing the old outline'),
                 onClick: onSummarize,
-              }, summarizing ? t('生成梗概中…', 'Summarizing…') : t('生成故事梗概', 'Synopsis from text')),
+              }, summarizing ? t('同步大纲中…', 'Syncing…') : t('同步章节大纲', 'Sync outline')),
               h('button', {
                 className: 'dsn-btn',
                 type: 'button',
@@ -1973,19 +1973,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       }, [chapter, detail.projectId, text, setReviseJob]);
 
       /** 生成故事梗概: read the prose and overwrite the stored synopsis. */
-      const summarizeChapter = useCallback(() => {
+      const syncOutline = useCallback(() => {
         if (!chapter) return;
         if (String(text || '').trim() === '') {
-          notify(t('这一章还没有正文，先写或先生成再生成梗概', 'This chapter has no text yet — write or generate it first.'), 'error');
+          notify(t('这一章还没有正文，先写或先生成再同步大纲', 'This chapter has no text yet — write or generate it first.'), 'error');
           return;
         }
         setConfirmRequest({
-          title: t('是否以当前章节故事生成故事梗概？', 'Create the synopsis from this chapter’s text?'),
-          text: t('会用当前正文生成一段新的故事梗概，并「直接保存、覆盖原有梗概」。正文不会被修改。', 'A new synopsis is generated from the text and saved immediately, replacing the existing one. The chapter text itself is untouched.'),
-          confirmLabel: t('生成并覆盖', 'Generate and replace'),
+          title: t('是否用当前章节故事同步章节大纲？', 'Sync the outline from this chapter’s text?'),
+          text: t('会用当前正文重写「故事梗概」，并同步「故事时间长度」「最低字数」「最多字数」「梗概最低字数」四项，然后直接保存覆盖旧大纲。正文不会被修改。', 'The synopsis is rewritten from the text, and the story duration, minimum words, maximum words and synopsis floor are re-measured from it. The outline is saved immediately, replacing the old one; the chapter text is untouched.'),
+          confirmLabel: t('同步并覆盖', 'Sync and replace'),
           action: async () => {
             try {
-              const started = await api('/chapter/summarize', {
+              const started = await api('/chapter/sync-outline', {
                 projectId: detail.projectId,
                 chapterId: chapter.chapterId,
                 content: text,
@@ -2003,17 +2003,31 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         if (!summarizeJob) return undefined;
         if (summarizeJob.state === 'running') {
           setChildBusy({
-            label: t('正在用正文生成故事梗概…', 'Building the synopsis from the text…'),
+            label: t('正在用正文同步章节大纲…', 'Syncing the outline from the text…'),
             message: summarizeJob.message || '',
           });
           return undefined;
         }
         setChildBusy(null);
         if (summarizeJob.state === 'done') {
-          notify(t('已用正文生成并保存故事梗概', 'Synopsis generated from the text and saved'), 'success');
+          const result = summarizeJob.result || {};
+          const notes = Array.isArray(result.notes) ? result.notes.filter(Boolean) : [];
+          notify(
+            t('已同步大纲：梗概 {chars} 字 · 时间 {days} 天 · 字数 {min}–{max} · 梗概下限 {floor}',
+              'Outline synced: {chars} characters of synopsis · {days} days · {min}–{max} words · synopsis floor {floor}',
+              {
+                chars: result.synopsis ? result.synopsis.length : 0,
+                days: result.durationDays || 0,
+                min: result.minWords || 0,
+                max: result.maxWords || 0,
+                floor: result.synopsisMinChars || 0,
+              }),
+            'success',
+          );
+          for (const note of notes) notify(note, 'error');
           onReload();
         } else if (summarizeJob.state === 'error') {
-          notify(summarizeJob.error || t('生成梗概失败', 'Building the synopsis failed'), 'error');
+          notify(summarizeJob.error || t('同步大纲失败', 'Syncing the outline failed'), 'error');
         }
         return undefined;
       }, [summarizeJob ? summarizeJob.jobId : null, summarizeJob ? summarizeJob.state : null, summarizeJob ? summarizeJob.message : null]);
@@ -2283,7 +2297,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 setReviseError('');
                 setReviseOpen(true);
               },
-              onSummarize: summarizeChapter,
+              onSummarize: syncOutline,
               summarizing: Boolean(summarizeJob && summarizeJob.state === 'running'),
             })),
           h('section', { className: 'dsn-page' },

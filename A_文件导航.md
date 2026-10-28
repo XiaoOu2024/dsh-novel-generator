@@ -195,3 +195,6 @@ client.js	|	2026-10-28 09:05	|	章节故事页加「生成故事梗概」（确�
 package.json	|	2026-10-28 09:05	|	0.1.32
 client.js	|	2026-10-28 09:35	|	修复「AI 修改梗概」点击无反应：弹窗移到 workspace stage 渲染，避开被 transform/overflow 裁剪的轨道
 package.json	|	2026-10-28 09:35	|	0.1.33
+index.js	|	2026-10-28 12:40	|	/章节/summarize 改为 /chapter/sync-outline：读正文重写梗概并同步时长、字数范围、梗概下限；下章占位冲突时保留时长并提示
+client.js	|	2026-10-28 12:40	|	故事页按钮改为「同步章节大纲」，确认文案与结果提示同步更新
+package.json	|	2026-10-28 12:40	|	0.1.34
