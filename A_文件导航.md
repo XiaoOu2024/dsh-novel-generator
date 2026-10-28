@@ -199,3 +199,7 @@ index.js	|	2026-10-28 12:40	|	/章节/summarize 改为 /chapter/sync-outline：�
 client.js	|	2026-10-28 12:40	|	故事页按钮改为「同步章节大纲」，确认文案与结果提示同步更新
 package.json	|	2026-10-28 12:40	|	0.1.34
 README.md	|	2026-10-28 12:45	|	记录「同步章节大纲」的重算范围与时长保护规则
+index.js	|	2026-10-28 19:20	|	新增 /import/scan 与 /import/apply：按「第N章 标题」顺序匹配、预览、逐章导入并可选同步大纲；抽出 syncChapterOutline 共用
+client.js	|	2026-10-28 19:20	|	作品行加「导入章节」，新增 ImportDialog（选择→匹配预览→导入进度）
+package.json	|	2026-10-28 19:20	|	0.1.35
+README.md	|	2026-10-28 19:20	|	新增导入章节章节说明

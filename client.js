@@ -256,6 +256,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-synopsis{min-height:220px;resize:vertical;line-height:1.8;font-size:13px}
 .dsn-hint{font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dsn-hint.warn{color:var(--dsw-alias-state-warn-primary)}
+.dsn-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dsn-check input{margin:2px 0 0}
+.dsn-importlist{max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:2px;
+  border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;background:var(--dsw-alias-bg-layer-3)}
+.dsn-importrow{display:flex;align-items:baseline;gap:8px;font-size:12px;padding:3px 0}
+.dsn-importno{min-width:44px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dsn-importfile{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsn-importarrow{color:var(--dsw-alias-label-secondary)}
+.dsn-importtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
+.dsn-importchars{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dsn-importwarn{color:var(--dsw-alias-state-warn-primary)}
 .dsn-progress{font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;gap:8px}
 .dsn-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--dsw-alias-border-l2);
   border-top-color:var(--dsw-alias-brand-primary);animation:dsn-spin .9s linear infinite}
@@ -432,6 +443,224 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', "Saving…") : t('保存', "Save")))));
     }
 
+    /**
+     * Import chapters from a folder of `.md` files.
+     *
+     * Three steps in one dialog: choose the folder and how to line the files up
+     * with the work's chapters, look at exactly which files will become which
+     * chapters, then import. The preview exists because the matcher stops at the
+     * first gap, so guessing wrong would silently drop chapters.
+     */
+    function ImportDialog({ project, resolveWorkspace, onCancel, onDone }) {
+      const [phase, setPhase] = useState('form');
+      const [dir, setDir] = useState('');
+      const [from, setFrom] = useState('next');
+      const [durationDays, setDurationDays] = useState(project.timeline ? (project.timeline.unitDays || 30) : 30);
+      const [syncOutline, setSyncOutline] = useState(true);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const [scan, setScan] = useState(null);
+      const [job, setJob] = useJob();
+
+      const pickDirectory = useCallback(async () => {
+        const ui = typeof resolveWorkspace === 'function' ? resolveWorkspace() : null;
+        if (!ui || typeof ui.pickDirectory !== 'function') {
+          setError(t('目录选择器还没就绪，请稍后再点一次「选择目录」', 'The directory picker is not ready yet — try again in a moment.'));
+          return;
+        }
+        try {
+          const picked = await ui.pickDirectory();
+          if (picked) setDir(picked);
+        } catch (pickError) {
+          setError(messageOf(pickError));
+        }
+      }, [resolveWorkspace]);
+
+      const runScan = useCallback(async () => {
+        if (dir.trim() === '') {
+          setError(t('请先选择要导入的章节目录', 'Choose the folder to import from first.'));
+          return;
+        }
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api('/import/scan', { projectId: project.projectId, dir, from });
+          setScan(result);
+          setPhase('preview');
+        } catch (scanError) {
+          setError(messageOf(scanError));
+        } finally {
+          setBusy(false);
+        }
+      }, [dir, from, project.projectId]);
+
+      const startImport = useCallback(async () => {
+        const pending = (scan ? scan.entries : []).filter((entry) => !entry.skip);
+        if (pending.length === 0) {
+          setError(t('没有可导入的章节（都已被作品里的章节占用）', 'Nothing to import — those chapter numbers are already taken.'));
+          return;
+        }
+        setError('');
+        try {
+          const started = await api('/import/apply', {
+            projectId: project.projectId,
+            dir: scan.dir,
+            files: pending.map((entry) => entry.fileName),
+            durationDays: Number(durationDays) || 1,
+            syncOutline: Boolean(syncOutline),
+          });
+          setJob(started);
+          setPhase('running');
+        } catch (importError) {
+          setError(messageOf(importError));
+        }
+      }, [scan, durationDays, syncOutline, project.projectId, setJob]);
+
+      useEffect(() => {
+        if (!job || job.state === 'running') return;
+        if (job.state === 'done') onDone(job.result || {});
+        else if (job.state === 'error') setError(job.error || t('导入失败', 'Import failed'));
+      }, [job ? job.jobId : null, job ? job.state : null]);
+
+      const entries = scan ? scan.entries : [];
+      const willImport = entries.filter((entry) => !entry.skip);
+      const taken = entries.filter((entry) => entry.skip);
+
+      const head = h('div', { className: 'dsn-dialog-head' },
+        h('div', { className: 'dsn-title' }, phase === 'form'
+          ? t('导入章节 · 选择来源', 'Import chapters · source')
+          : t('导入章节 · 匹配结果', 'Import chapters · match')),
+        h('div', { className: 'dsn-sub' }, project.title),
+        h('div', { className: 'dsn-spacer' }));
+
+      if (phase === 'form') {
+        return h('div', { className: 'dsn-dialog-backdrop' },
+          h('div', { className: 'dsn-dialog', style: { width: 'min(620px, calc(100% - 48px))' } },
+            head,
+            h('div', { className: 'dsn-dialog-body' },
+              h('label', { className: 'dsn-field span4' },
+                h('span', { className: 'dsn-label' }, t('待导入章节目录（必填）', 'Folder to import from (required)')),
+                h('div', { style: { display: 'flex', gap: 8 } },
+                  h('input', {
+                    className: 'dsn-input',
+                    value: dir,
+                    placeholder: t('例如：D:\\小说\\第二部', 'e.g. D:\\novel\\part-two'),
+                    onChange: (event) => setDir(event.target.value),
+                  }),
+                  h('button', { className: 'dsn-btn ghost', type: 'button', onClick: pickDirectory }, t('选择目录', 'Browse')))),
+              h('div', { className: 'dsn-hint span4' }, t('文件名要按「第N章 标题.md」命名（N 可以是 1、007、十二）。插件从你选定的起点按 1、2、3… 顺序配对，配对到第一个缺号为止，后面的文件不会被导入。', 'Files must be named like “第N章 Title.md” (N may be 1, 007 or 十二). Matching walks 1, 2, 3… from the chosen start and stops at the first missing number; anything after that gap is left out.')),
+              h('div', { className: 'dsn-field span2' },
+                h('span', { className: 'dsn-label' }, t('匹配起点', 'Where to start matching')),
+                h('label', { className: 'dsn-check' },
+                  h('input', {
+                    type: 'radio',
+                    name: 'dsn-import-from',
+                    checked: from === 'first',
+                    onChange: () => setFrom('first'),
+                  }),
+                  h('span', null, t('从第 1 章开始（已存在的章号会跳过）', 'From chapter 1 (numbers already taken are skipped)'))),
+                h('label', { className: 'dsn-check' },
+                  h('input', {
+                    type: 'radio',
+                    name: 'dsn-import-from',
+                    checked: from === 'next',
+                    onChange: () => setFrom('next'),
+                  }),
+                  h('span', null, t('从作品的下一章开始', 'From the chapter after this work’s last one')))),
+              h('label', { className: 'dsn-field span2' },
+                h('span', { className: 'dsn-label' }, t('每章故事时间长度（天）', 'Story days per chapter')),
+                h('input', {
+                  className: 'dsn-input',
+                  type: 'number',
+                  min: 1,
+                  value: durationDays,
+                  onChange: (event) => setDurationDays(Number(event.target.value)),
+                })),
+              h('label', { className: 'dsn-check span4' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: syncOutline,
+                  onChange: (event) => setSyncOutline(event.target.checked),
+                }),
+                h('span', null, t('导入后自动同步章节大纲（每章调用一次模型，生成梗概与字数范围）', 'Sync each outline after import (one model call per chapter, for the synopsis and word bounds)'))),
+              syncOutline ? null : h('div', { className: 'dsn-hint warn span4' }, t('不勾选时导入的章节没有梗概：后续生成正文时它们不会出现在「已发生的章节梗概」里，可以之后逐章用「同步章节大纲」补。', 'Without it the imported chapters have no synopsis, so later generations will not see them in “what already happened”. You can sync each one later.')),
+              error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+            h('div', { className: 'dsn-dialog-foot' },
+              h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', 'Cancel')),
+              h('div', { className: 'dsn-spacer' }),
+              h('button', { className: 'dsn-btn primary', type: 'button', disabled: busy, onClick: runScan },
+                busy ? t('匹配中…', 'Matching…') : t('确定', 'Next')))));
+      }
+
+      if (phase === 'preview') {
+        return h('div', { className: 'dsn-dialog-backdrop' },
+          h('div', { className: 'dsn-dialog', style: { width: 'min(720px, calc(100% - 48px))' } },
+            head,
+            h('div', { className: 'dsn-dialog-body' },
+              h('div', { className: 'dsn-hint span4' }, t('来源：{dir} · 起点：第 {start} 章 · 将导入 {count} 章 · 每章 {days} 天{extra}',
+                'From {dir} · starts at chapter {start} · {count} chapters · {days} days each{extra}', {
+                  dir: scan.dir,
+                  start: scan.startNumber,
+                  count: willImport.length,
+                  days: durationDays,
+                  extra: taken.length ? t('（跳过 {n} 章）', ' ({n} skipped)', { n: taken.length }) : '',
+                })),
+              willImport.length === 0
+                ? h('div', { className: 'dsn-hint warn span4' }, t('没有可导入的章节。', 'Nothing to import.'))
+                : h('div', { className: 'dsn-importlist span4' },
+                  willImport.map((entry) => h('div', { key: entry.fileName, className: 'dsn-importrow' },
+                    h('span', { className: 'dsn-importno' }, `#${entry.number}`),
+                    h('span', { className: 'dsn-importfile' }, entry.fileName),
+                    h('span', { className: 'dsn-importarrow' }, '→'),
+                    h('span', { className: 'dsn-importtitle' }, t('第 {n} 章 {title}', 'Chapter {n} · {title}', { n: entry.number, title: entry.title || t('未命名', 'Untitled') })),
+                    h('span', { className: 'dsn-importchars' }, t('{n} 字', '{n} chars', { n: entry.chars })),
+                    entry.garbled ? h('span', { className: 'dsn-importwarn' }, t('疑似乱码', 'encoding?') ) : null))),
+              taken.length > 0
+                ? h('div', { className: 'dsn-hint warn span4' }, t('这些章号已被作品占用，会跳过：{list}', 'These numbers are already taken and will be skipped: {list}', { list: taken.map((entry) => `第${entry.number}章`).join('、') }))
+                : null,
+              scan.leftover.length > 0
+                ? h('div', { className: 'dsn-hint span4' }, t('没连上、不会导入：{list}', 'Unmatched, not imported: {list}', { list: scan.leftover.join('、') }))
+                : null,
+              scan.unrecognized.length > 0
+                ? h('div', { className: 'dsn-hint span4' }, t('文件名认不出章号：{list}', 'No chapter number in the name: {list}', { list: scan.unrecognized.join('、') }))
+                : null,
+              error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+            h('div', { className: 'dsn-dialog-foot' },
+              h('button', { className: 'dsn-btn ghost', type: 'button', onClick: () => { setPhase('form'); setError(''); } }, t('返回修改', 'Back')),
+              h('div', { className: 'dsn-spacer' }),
+              h('button', { className: 'dsn-btn', type: 'button', onClick: onCancel }, t('取消', 'Cancel')),
+              h('button', {
+                className: 'dsn-btn primary',
+                type: 'button',
+                disabled: willImport.length === 0,
+                onClick: startImport,
+              }, t('确认导入 {n} 章', 'Import {n} chapters', { n: willImport.length })))));
+      }
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(560px, calc(100% - 48px))' } },
+          head,
+          h('div', { className: 'dsn-dialog-body' },
+            h('div', { className: 'dsn-progress span4' }, h('span', { className: 'dsn-spin' }), job ? (job.message || t('正在导入…', 'Importing…')) : t('正在导入…', 'Importing…')),
+            error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('div', { className: 'dsn-spacer' }),
+            h('button', {
+              className: 'dsn-btn',
+              type: 'button',
+              onClick: async () => {
+                if (job) {
+                  try {
+                    await api('/job/cancel', { jobId: job.jobId });
+                  } catch (stopError) {
+                    setError(messageOf(stopError));
+                  }
+                }
+                onCancel();
+              },
+            }, t('停止', 'Stop')))));
+    }
+
     function PresetDialog({ project, presets, onCancel, onSaved }) {
       const [preset, setPreset] = useState(project.agentPreset || '');
       const [busy, setBusy] = useState(false);
@@ -555,7 +784,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', 'Saving…') : t('保存', 'Save')))));
     }
 
-    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude }) {
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude, onImport }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -809,6 +1038,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onEditPrelude(project);
               },
             }, t('前置', 'Preface')),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('从某个目录按「第N章 标题.md」的顺序导入章节', 'Import chapters from a folder of “第N章 Title.md” files'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onImport(project);
+              },
+            }, t('导入章节', 'Import')),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
@@ -2415,6 +2653,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [modelTarget, setModelTarget] = useState(null);
       const [presetTarget, setPresetTarget] = useState(null);
       const [preludeTarget, setPreludeTarget] = useState(null);
+      const [importTarget, setImportTarget] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
         leaveGuard.current = guard;
@@ -2508,6 +2747,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onEditModel: setModelTarget,
                   onEditPreset: setPresetTarget,
                   onEditPrelude: setPreludeTarget,
+                  onImport: setImportTarget,
                 }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
@@ -2544,6 +2784,30 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               // The open work shows its preset in the top bar, so refresh it too.
               if (projectId) await loadDetail(projectId);
               setToast({ text: t('预设已更新，重建会话后生效', 'Preset updated — it applies once the work’s session is rebuilt'), kind: 'success' });
+            },
+          })
+          : null,
+        importTarget
+          ? h(ImportDialog, {
+            project: importTarget,
+            resolveWorkspace,
+            onCancel: () => setImportTarget(null),
+            onDone: async (result) => {
+              setImportTarget(null);
+              await loadBoot();
+              const imported = (result.imported || []).length;
+              const skipped = (result.skipped || []).length;
+              const failed = (result.failed || []).length;
+              const synced = (result.synced || []).length;
+              const parts = [t('已导入 {n} 章', 'Imported {n} chapters', { n: imported })];
+              if (synced > 0) parts.push(t('同步大纲 {n} 章', 'synced {n} outlines', { n: synced }));
+              if (skipped > 0) parts.push(t('跳过 {n} 章（章号已被占用）', 'skipped {n} taken', { n: skipped }));
+              if (failed > 0) parts.push(t('失败 {n} 个：{list}', '{n} failed: {list}', {
+                n: failed,
+                list: (result.failed || []).map((entry) => `${entry.fileName}（${entry.reason}）`).join('、'),
+              }));
+              if (result.snapshotJobId) parts.push(t('世界快照已开始生成', 'World snapshot started'));
+              setToast({ text: parts.join('；'), kind: failed > 0 ? 'error' : 'success' });
             },
           })
           : null,

@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-28.5',
+    revision: '2026-10-28.9',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2088,90 +2088,99 @@ async function startSyncOutline(ctx, root, registry, body) {
     throw httpError(404, `章节不存在: ${chapterId}`);
   }
   return startJob(registry, { kind: 'sync-outline', projectId, chapterId }, async (job) => {
-    const project = await readProject(root, projectId);
-    const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
-    if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
     job.message = '正在读正文同步章节大纲';
-    const raw = await askAgent(ctx, root, project, syncOutlinePrompt(project, chapter, prose), (note) => {
+    return syncChapterOutline(ctx, root, projectId, chapterId, prose, (note) => {
       job.message = note;
     });
-    const parsed = parseJsonReply(raw) || {};
-    const chars = wordCount(prose);
-    // A reply without usable JSON still yields a synopsis: the model's prose is
-    // the summary, and the numbers fall back to what the chapter actually is.
-    const synopsis = cleanSynopsis(
-      typeof parsed.synopsis === 'string' && parsed.synopsis.trim() !== '' ? parsed.synopsis : raw,
-    );
-    if (synopsis === '') throw httpError(502, '模型没有给出梗概');
+  });
+}
 
-    const previous = chapter.outline || {};
-    const span = chapterWindow(project, chapter);
-    const notes = [];
+/**
+ * The shared body of "measure this chapter from its prose and write the result
+ * back into its outline". Used by the story page's button and by chapter import,
+ * so both produce identical outlines.
+ */
+async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) {
+  const project = await readProject(root, projectId);
+  const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
+  if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
+  const raw = await askAgent(ctx, root, project, syncOutlinePrompt(project, chapter, prose), note);
+  const parsed = parseJsonReply(raw) || {};
+  const chars = wordCount(prose);
+  // A reply without usable JSON still yields a synopsis: the model's prose is
+  // the summary, and the numbers fall back to what the chapter actually is.
+  const synopsis = cleanSynopsis(
+    typeof parsed.synopsis === 'string' && parsed.synopsis.trim() !== '' ? parsed.synopsis : raw,
+  );
+  if (synopsis === '') throw httpError(502, '模型没有给出梗概');
 
-    // Word bounds must contain what was actually written, whatever the model said.
-    const floorHundred = (value) => Math.max(1, Math.floor(value / 100) * 100);
-    const ceilHundred = (value) => Math.max(200, Math.ceil(value / 100) * 100);
-    let minWords = Number.isFinite(Number(parsed.minWords)) ? Math.max(1, Math.round(Number(parsed.minWords))) : 0;
-    let maxWords = Number.isFinite(Number(parsed.maxWords)) ? Math.max(1, Math.round(Number(parsed.maxWords))) : 0;
-    if (minWords <= 0 || minWords > chars) minWords = floorHundred(chars * 0.9);
-    if (maxWords <= 0 || maxWords < chars) maxWords = ceilHundred(chars * 1.1);
-    if (maxWords < minWords) maxWords = minWords + 100;
+  const previous = chapter.outline || {};
+  const span = chapterWindow(project, chapter);
+  const notes = [];
 
-    // The synopsis floor has to stay reachable by the synopsis it was measured on.
-    let synopsisMinChars = Number.isFinite(Number(parsed.synopsisMinChars))
-      ? Math.round(Number(parsed.synopsisMinChars))
-      : Math.max(20, Math.floor(synopsis.length * 0.8));
-    synopsisMinChars = Math.max(20, Math.min(400, synopsisMinChars));
-    synopsisMinChars = Math.max(1, Math.min(synopsisMinChars, synopsis.length));
+  // Word bounds must contain what was actually written, whatever the model said.
+  const floorHundred = (value) => Math.max(1, Math.floor(value / 100) * 100);
+  const ceilHundred = (value) => Math.max(200, Math.ceil(value / 100) * 100);
+  let minWords = Number.isFinite(Number(parsed.minWords)) ? Math.max(1, Math.round(Number(parsed.minWords))) : 0;
+  let maxWords = Number.isFinite(Number(parsed.maxWords)) ? Math.max(1, Math.round(Number(parsed.maxWords))) : 0;
+  if (minWords <= 0 || minWords > chars) minWords = floorHundred(chars * 0.9);
+  if (maxWords <= 0 || maxWords < chars) maxWords = ceilHundred(chars * 1.1);
+  if (maxWords < minWords) maxWords = minWords + 100;
 
-    // A new duration only lands when it keeps the next chapter where it is.
-    let durationDays = chapter.durationDays;
-    const proposed = Number.isFinite(Number(parsed.durationDays))
-      ? Math.max(1, Math.min(365, Math.round(Number(parsed.durationDays))))
-      : null;
-    if (proposed !== null && proposed !== chapter.durationDays) {
-      const following = (project.chapters || [])
-        .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay >= span.start)
-        .sort((a, b) => a.startDay - b.startDay)[0] || null;
-      if (following === null) {
-        durationDays = proposed;
-      } else if (following.startDay === span.start + proposed) {
-        durationDays = proposed;
-      } else {
-        notes.push(`下一章从第 ${following.startDay} 天开始，改时长会错位，时间长度保持 ${chapter.durationDays} 天（模型建议 ${proposed} 天）`);
-      }
+  // The synopsis floor has to stay reachable by the synopsis it was measured on.
+  let synopsisMinChars = Number.isFinite(Number(parsed.synopsisMinChars))
+    ? Math.round(Number(parsed.synopsisMinChars))
+    : Math.max(20, Math.floor(synopsis.length * 0.8));
+  synopsisMinChars = Math.max(20, Math.min(400, synopsisMinChars));
+  synopsisMinChars = Math.max(1, Math.min(synopsisMinChars, synopsis.length));
+
+  // A new duration only lands when it keeps the next chapter where it is.
+  let durationDays = chapter.durationDays;
+  const proposed = Number.isFinite(Number(parsed.durationDays))
+    ? Math.max(1, Math.min(365, Math.round(Number(parsed.durationDays))))
+    : null;
+  if (proposed !== null && proposed !== chapter.durationDays) {
+    const following = (project.chapters || [])
+      .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay >= span.start)
+      .sort((a, b) => a.startDay - b.startDay)[0] || null;
+    if (following === null) {
+      durationDays = proposed;
+    } else if (following.startDay === span.start + proposed) {
+      durationDays = proposed;
+    } else {
+      notes.push(`下一章从第 ${following.startDay} 天开始，改时长会错位，时间长度保持 ${chapter.durationDays} 天（模型建议 ${proposed} 天）`);
     }
+  }
 
-    const saved = await mutateProject(root, projectId, (draft) => {
-      const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
-      if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
-      target.outline = {
-        ...previous,
-        synopsis,
-        minWords,
-        maxWords,
-        durationDays,
-        synopsisMinChars,
-        savedAt: Date.now(),
-      };
-      target.durationDays = durationDays;
-      target.updatedAt = Date.now();
-      return { chapter: { ...target, content: undefined }, project: summarize(draft) };
-    });
-    const fresh = await readProject(root, projectId);
-    await exportChapterOutline(fresh, saved.chapter);
-    await exportProjectInfo(fresh);
-    return {
+  const saved = await mutateProject(root, projectId, (draft) => {
+    const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
+    if (!target) throw httpError(404, `章节不存在: ${chapterId}`);
+    target.outline = {
+      ...previous,
       synopsis,
       minWords,
       maxWords,
       durationDays,
       synopsisMinChars,
-      chars,
-      notes,
-      chapter: saved.chapter,
+      savedAt: Date.now(),
     };
+    target.durationDays = durationDays;
+    target.updatedAt = Date.now();
+    return { chapter: { ...target, content: undefined }, project: summarize(draft) };
   });
+  const fresh = await readProject(root, projectId);
+  await exportChapterOutline(fresh, saved.chapter);
+  await exportProjectInfo(fresh);
+  return {
+    synopsis,
+    minWords,
+    maxWords,
+    durationDays,
+    synopsisMinChars,
+    chars,
+    notes,
+    chapter: saved.chapter,
+  };
 }
 
 /** Rewrite one chapter's synopsis from a note, without saving it. */
@@ -2195,6 +2204,245 @@ async function startSynopsisRevise(ctx, root, registry, body) {
     const revised = cleanSynopsis(raw);
     if (revised === '') throw httpError(502, '模型没有给出梗概');
     return { synopsis: revised, chars: revised.length };
+  });
+}
+
+/* ------------------------------------------------------- chapter importing */
+
+/** Chinese numerals as used in chapter headings, e.g. 第十二章. */
+const CHINESE_DIGITS = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const CHINESE_UNITS = { 十: 10, 百: 100, 千: 1000 };
+
+/** Turn `十二` / `一百零三` / `12` into a number, or null. */
+function parseChapterNumber(text) {
+  const raw = String(text || '').trim();
+  if (raw === '') return null;
+  if (/^\d+$/u.test(raw)) {
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (!/^[零〇一二两三四五六七八九十百千]+$/u.test(raw)) return null;
+  let total = 0;
+  let section = 0;
+  let digit = 0;
+  for (const char of raw) {
+    if (char in CHINESE_DIGITS) {
+      digit = CHINESE_DIGITS[char];
+      continue;
+    }
+    const unit = CHINESE_UNITS[char];
+    if (unit === undefined) continue;
+    if (digit === 0 && unit === 10) digit = 1;
+    section += digit * unit;
+    digit = 0;
+  }
+  total = section + digit;
+  return total > 0 && total < 100000 ? total : null;
+}
+
+/**
+ * Chapter number and title from a file name: `第12章 雨夜.md`, `第007章雨夜.md`
+ * and `第十二章 雨夜.md` all yield a number, and the title is whatever follows
+ * the suffix (`章` / `回` / `节`) or trailing separators.
+ */
+function parseChapterFileName(fileName) {
+  // The extension goes first: `第3章.md` would otherwise leave `md` as the title.
+  const stem = String(fileName || '').replace(/\.(md|markdown|txt)$/iu, '');
+  const match = stem.match(/^第\s*([0-9零〇一二两三四五六七八九十百千]+)\s*[章回节][\s._\-—:：]*(.*)$/u);
+  if (!match) return null;
+  const number = parseChapterNumber(match[1]);
+  if (number === null) return null;
+  return { number, title: String(match[2] || '').trim() };
+}
+
+/** Read a directory of chapter files and match them from the chosen start. */
+async function scanImportChapters(root, body) {
+  const projectId = asText(body.projectId);
+  const project = await readProject(root, projectId);
+  const dir = asText(body.dir);
+  if (dir === '') throw httpError(400, '请先选择要导入的章节目录');
+  const mode = asText(body.from) === 'next' ? 'next' : 'first';
+  let entries = [];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    throw httpError(400, `无法读取目录 ${dir}：${error instanceof Error ? error.message : String(error)}`);
+  }
+  const files = entries.filter((entry) => entry.isFile() && /\.(md|markdown|txt)$/iu.test(entry.name));
+  if (files.length === 0) throw httpError(400, '这个目录里没有 .md 章节文件');
+
+  const byNumber = new Map();
+  const unrecognized = [];
+  for (const file of files) {
+    const parsed = parseChapterFileName(file.name);
+    if (!parsed) {
+      unrecognized.push(file.name);
+      continue;
+    }
+    if (!byNumber.has(parsed.number)) byNumber.set(parsed.number, { ...parsed, fileName: file.name });
+  }
+
+  const existingNumbers = new Set(
+    (project.chapters || []).map((chapter) => (Number(chapter.index) || 0) + 1),
+  );
+  const startNumber = mode === 'next'
+    ? Math.max(0, ...existingNumbers) + 1
+    : 1;
+
+  const matched = [];
+  for (let number = startNumber; byNumber.has(number); number += 1) {
+    const entry = byNumber.get(number);
+    let chars = 0;
+    let garbled = false;
+    try {
+      const text = await readFile(join(dir, entry.fileName), 'utf8');
+      chars = wordCount(text);
+      garbled = text.includes('\uFFFD');
+    } catch {
+      // The preview still lists the file; the import reports a read failure.
+    }
+    matched.push({
+      number,
+      fileName: entry.fileName,
+      title: entry.title,
+      chars,
+      garbled,
+      skip: existingNumbers.has(number),
+    });
+    if (matched.length >= 500) break;
+  }
+
+  const matchedNumbers = new Set(matched.map((entry) => entry.number));
+  const leftover = [...byNumber.values()]
+    .filter((entry) => !matchedNumbers.has(entry.number))
+    .sort((a, b) => a.number - b.number)
+    .map((entry) => entry.fileName);
+
+  const notes = [];
+  if (leftover.length > 0) notes.push(`另有 ${leftover.length} 个章节文件没有连上，不会导入`);
+  if (unrecognized.length > 0) notes.push(`另有 ${unrecognized.length} 个文件名认不出章号，不会导入`);
+  if (matched.length === 0) notes.push(`从第 ${startNumber} 章开始没有找到能连上的文件`);
+
+  return {
+    dir,
+    mode,
+    startNumber,
+    total: matched.length,
+    entries: matched,
+    leftover,
+    unrecognized,
+    notes,
+  };
+}
+
+/**
+ * Copy the confirmed files in as chapters and, when asked, sync each outline.
+ *
+ * The import is deliberately one chapter at a time: a failure names the file it
+ * stopped on and leaves the chapters already written in place.
+ */
+async function startImportChapters(ctx, root, registry, body) {
+  const projectId = asText(body.projectId);
+  const dir = asText(body.dir);
+  const files = Array.isArray(body.files) ? body.files.filter((name) => typeof name === 'string' && name !== '') : [];
+  if (dir === '') throw httpError(400, '请先选择要导入的章节目录');
+  if (files.length === 0) throw httpError(400, '没有选中要导入的章节文件');
+  const durationDays = Math.max(1, Math.min(3650, Math.round(Number(body.durationDays) || 0) || 1));
+  const syncOutline = body.syncOutline === true;
+  const preview = await readProject(root, projectId);
+
+  return startJob(registry, { kind: 'import-chapters', projectId }, async (job) => {
+    const imported = [];
+    const skipped = [];
+    const failed = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const fileName = files[index];
+      job.message = `正在导入 ${index + 1}/${files.length}：${fileName}`;
+      const parsed = parseChapterFileName(fileName);
+      if (!parsed) {
+        failed.push({ fileName, reason: '文件名认不出章号' });
+        continue;
+      }
+      let content;
+      try {
+        content = await readFile(join(dir, fileName), 'utf8');
+      } catch (error) {
+        failed.push({ fileName, reason: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+      if (content.trim() === '') {
+        failed.push({ fileName, reason: '文件是空的' });
+        continue;
+      }
+      let created = null;
+      const project = await readProject(root, projectId);
+      const taken = (project.chapters || []).some((chapter) => (Number(chapter.index) || 0) + 1 === parsed.number);
+      if (taken) {
+        skipped.push({ fileName, number: parsed.number });
+        continue;
+      }
+      await mutateProject(root, projectId, (draft) => {
+        const chapter = {
+          chapterId: randomUUID(),
+          index: nextChapterIndex(draft),
+          title: parsed.title !== '' ? parsed.title : `第 ${parsed.number} 章`,
+          startDay: lastChapterEnd(draft),
+          durationDays,
+          outline: null,
+          content,
+          wordCount: wordCount(content),
+          status: 'imported',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          generatedAt: null,
+        };
+        draft.chapters.push(chapter);
+        created = chapter;
+        return chapter;
+      });
+      const fresh = await readProject(root, projectId);
+      const saved = fresh.chapters.find((chapter) => chapter.chapterId === created.chapterId) || created;
+      await exportChapter(fresh, saved, content);
+      await exportChapterOutline(fresh, saved);
+      await exportProjectInfo(fresh);
+      imported.push({ chapterId: saved.chapterId, number: parsed.number, title: saved.title, chars: wordCount(content) });
+    }
+
+    const synced = [];
+    if (syncOutline && imported.length > 0) {
+      for (let index = 0; index < imported.length; index += 1) {
+        const entry = imported[index];
+        job.message = `正在同步章节大纲 ${index + 1}/${imported.length}：第 ${entry.number} 章`;
+        try {
+          const project = await readProject(root, projectId);
+          const chapter = project.chapters.find((item) => item.chapterId === entry.chapterId);
+          const result = await syncChapterOutline(ctx, root, projectId, entry.chapterId, chapter ? (chapter.content || '') : '', (note) => {
+            job.message = note;
+          });
+          synced.push({ chapterId: entry.chapterId, synopsisChars: (result.synopsis || '').length });
+        } catch (error) {
+          failed.push({ fileName: entry.title, reason: `同步大纲失败：${error instanceof Error ? error.message : String(error)}` });
+        }
+      }
+    }
+
+    // Imported chapters advance story time like any other, so the grid points
+    // they cross get their snapshots.
+    let snapshotJobId = null;
+    if (imported.length > 0) {
+      const after = await readProject(root, projectId);
+      const target = autoSnapshotTarget(after, lastChapterEnd(after));
+      if (target !== null) snapshotJobId = registerSnapshot(ctx, root, registry, projectId, target).jobId;
+    }
+
+    return {
+      imported,
+      skipped,
+      failed,
+      synced,
+      snapshotJobId,
+      project: summarize(await readProject(root, projectId)),
+    };
   });
 }
 
@@ -2994,6 +3242,10 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startRevise(ctx, root, registry, body);
     case '/chapter/sync-outline':
       return startSyncOutline(ctx, root, registry, body);
+    case '/import/scan':
+      return scanImportChapters(root, body);
+    case '/import/apply':
+      return startImportChapters(ctx, root, registry, body);
     case '/outline/revise':
       return startSynopsisRevise(ctx, root, registry, body);
     case '/compose':
