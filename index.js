@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-29.1',
+    revision: '2026-10-29.2',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2103,7 +2103,10 @@ async function startSyncOutline(ctx, root, registry, body) {
  * back into its outline". Used by the story page's button and by chapter import,
  * so both produce identical outlines.
  */
-async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) {
+async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note, options = {}) {
+  // Import sets the per-chapter length explicitly, so its sync keeps that number
+  // and never shifts the chapters that follow.
+  const keepDuration = options.keepDuration === true;
   const project = await readProject(root, projectId);
   const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
   if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
@@ -2137,23 +2140,16 @@ async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) 
   synopsisMinChars = Math.max(20, Math.min(400, synopsisMinChars));
   synopsisMinChars = Math.max(1, Math.min(synopsisMinChars, synopsis.length));
 
-  // A new duration only lands when it keeps the next chapter where it is.
+  // The measured duration wins, and the timeline stays contiguous: every later
+  // chapter moves with it. Snapshots are deliberately left where they are — the
+  // Client tells the author to regenerate the ones that no longer line up.
   let durationDays = chapter.durationDays;
   const proposed = Number.isFinite(Number(parsed.durationDays))
     ? Math.max(1, Math.min(365, Math.round(Number(parsed.durationDays))))
     : null;
-  if (proposed !== null && proposed !== chapter.durationDays) {
-    const following = (project.chapters || [])
-      .filter((entry) => entry.chapterId !== chapter.chapterId && entry.startDay >= span.start)
-      .sort((a, b) => a.startDay - b.startDay)[0] || null;
-    if (following === null) {
-      durationDays = proposed;
-    } else if (following.startDay === span.start + proposed) {
-      durationDays = proposed;
-    } else {
-      notes.push(`下一章从第 ${following.startDay} 天开始，改时长会错位，时间长度保持 ${chapter.durationDays} 天（模型建议 ${proposed} 天）`);
-    }
-  }
+  const shiftDays = proposed !== null && !keepDuration ? proposed - chapter.durationDays : 0;
+  if (proposed !== null && !keepDuration) durationDays = proposed;
+  const shifted = [];
 
   const saved = await mutateProject(root, projectId, (draft) => {
     const target = draft.chapters.find((entry) => entry.chapterId === chapterId);
@@ -2169,11 +2165,24 @@ async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) 
     };
     target.durationDays = durationDays;
     target.updatedAt = Date.now();
+    if (shiftDays !== 0) {
+      for (const other of draft.chapters) {
+        if (other.chapterId === target.chapterId) continue;
+        if (other.startDay < span.start) continue;
+        const from = other.startDay;
+        other.startDay = Math.max(span.start + 1, from + shiftDays);
+        other.updatedAt = Date.now();
+        shifted.push({ chapterId: other.chapterId, title: other.title, fromDay: from, toDay: other.startDay });
+      }
+    }
     return { chapter: { ...target, content: undefined }, project: summarize(draft) };
   });
   const fresh = await readProject(root, projectId);
   await exportChapterOutline(fresh, saved.chapter);
   await exportProjectInfo(fresh);
+  if (shifted.length > 0 && shiftDays !== 0) {
+    notes.push(`本章时间长度 ${chapter.durationDays} → ${durationDays} 天，之后 ${shifted.length} 章整体顺移 ${shiftDays > 0 ? '+' : ''}${shiftDays} 天；世界快照没有跟着移动`);
+  }
   return {
     synopsis,
     minWords,
@@ -2182,6 +2191,8 @@ async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) 
     synopsisMinChars,
     chars,
     notes,
+    shifted,
+    shiftDays,
     chapter: saved.chapter,
   };
 }
@@ -2421,7 +2432,7 @@ async function startImportChapters(ctx, root, registry, body) {
           const chapter = project.chapters.find((item) => item.chapterId === entry.chapterId);
           const result = await syncChapterOutline(ctx, root, projectId, entry.chapterId, chapter ? (chapter.content || '') : '', (note) => {
             job.message = note;
-          });
+          }, { keepDuration: true });
           synced.push({ chapterId: entry.chapterId, synopsisChars: (result.synopsis || '').length });
         } catch (error) {
           failed.push({ fileName: entry.title, reason: `同步大纲失败：${error instanceof Error ? error.message : String(error)}` });

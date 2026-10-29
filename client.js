@@ -718,6 +718,37 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('整理中…', 'Merging…') : t('写入前置', 'Write into preface')))));
     }
 
+    /**
+     * After a duration change moves the chapters that follow, the snapshots stay
+     * where they were — this dialog is the only place the author learns about it.
+     */
+    function ShiftNoticeDialog({ shiftDays, shifted, onClose, onGoTimeline }) {
+      const list = Array.isArray(shifted) ? shifted : [];
+      const sample = list.slice(0, 6);
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(560px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('时间线已顺移，快照需要你手动更新', 'The timeline moved — snapshots need updating')),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('div', { className: 'dsn-text span4' }, t('本章的时间长度改变了 {d} 天，之后 {n} 章已整体顺移，保持首尾相接：', 'This chapter’s length changed by {d} days, and {n} following chapters moved with it so the timeline stays contiguous:', { d: shiftDays > 0 ? `+${shiftDays}` : shiftDays, n: list.length })),
+            list.length > 0
+              ? h('div', { className: 'dsn-importlist span4' },
+                sample.map((entry) => h('div', { key: entry.chapterId, className: 'dsn-importrow' },
+                  h('span', { className: 'dsn-importtitle' }, entry.title || t('未命名', 'Untitled')),
+                  h('span', { className: 'dsn-importarrow' }, '→'),
+                  h('span', { className: 'dsn-importchars' }, t('第 {from} 天 → 第 {to} 天', 'day {from} → day {to}', { from: entry.fromDay, to: entry.toDay })))))
+              : null,
+            list.length > sample.length
+              ? h('div', { className: 'dsn-hint span4' }, t('另有 {n} 章同样顺移。', '{n} more chapters moved as well.', { n: list.length - sample.length }))
+              : null,
+            h('div', { className: 'dsn-hint warn span4' }, t('世界快照没有跟着移动：已有的那几份仍按旧日期保存。请到时间长河检查，把受影响的落点重新生成；如果生成正文时提示「最近的世界快照停在…」，也是去那里更新。', 'The world snapshots did not move with it — the existing ones still hold the old dates. Open the timeline, regenerate the affected points, and update them if a generation says the snapshot is behind.'))),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onClose }, t('知道了', 'Got it')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn primary', type: 'button', onClick: onGoTimeline }, t('去时间长河', 'Open timeline')))));
+    }
+
     function PresetDialog({ project, presets, onCancel, onSaved }) {
       const [preset, setPreset] = useState(project.agentPreset || '');
       const [busy, setBusy] = useState(false);
@@ -2212,6 +2243,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [styleApplyJob, setStyleApplyJob] = useJob();
       const [styleResult, setStyleResult] = useState(null);
       const [styleError, setStyleError] = useState('');
+      const [shiftNotice, setShiftNotice] = useState(null);
       // The synopsis rewrite lives here, not in OutlinePage: the page renders
       // inside the translated track, where an absolutely positioned dialog would
       // be painted off-screen.
@@ -2343,7 +2375,13 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               }),
             'success',
           );
-          for (const note of notes) notify(note, 'error');
+          // A duration change moved the chapters after it; snapshots did not move
+          // with them, so this is announced in a dialog instead of a toast.
+          if (result.shiftDays && Array.isArray(result.shifted) && result.shifted.length > 0) {
+            setShiftNotice({ shiftDays: result.shiftDays, shifted: result.shifted });
+          } else {
+            for (const note of notes) notify(note, 'error');
+          }
           onReload();
         } else if (summarizeJob.state === 'error') {
           notify(summarizeJob.error || t('同步大纲失败', 'Syncing the outline failed'), 'error');
@@ -2723,6 +2761,17 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               revisingSynopsis,
               isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
+        shiftNotice
+          ? h(ShiftNoticeDialog, {
+            shiftDays: shiftNotice.shiftDays,
+            shifted: shiftNotice.shifted,
+            onClose: () => setShiftNotice(null),
+            onGoTimeline: () => {
+              setShiftNotice(null);
+              setView('world');
+            },
+          })
+          : null,
         styleResult || applyingStyle
           ? h(StyleDialog, {
             style: styleResult ? styleResult.style : '',
