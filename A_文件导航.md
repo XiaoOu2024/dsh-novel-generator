@@ -220,3 +220,4 @@ package.json	|	2026-10-29 21:40	|	0.1.40
 index.js	|	2026-10-29 22:30	|	写作与推演提示词加入上一章正文（full/half/none 三档，8000 字上限，尾部保留）；新增 /project/settings
 client.js	|	2026-10-29 22:30	|	作品行加「设置」按钮与 SettingsDialog（前文参考程度三选一）
 package.json	|	2026-10-29 22:30	|	0.1.41
+README.md	|	2026-10-29 22:35	|	记录作品设置与前文参考程度
