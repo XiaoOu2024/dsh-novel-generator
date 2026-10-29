@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-28.10',
+    revision: '2026-10-29.1',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2017,7 +2017,6 @@ async function updatePreset(ctx, root, body) {
  * the four numbers the outline records, all measured from this one chapter.
  */
 function syncOutlinePrompt(project, chapter, prose) {
-  const span = chapterWindow(project, chapter);
   const chars = wordCount(prose);
   const lines = [];
   lines.push('你是这部小说的编辑。作者已经写完了下面这一章，请据此同步它的章节大纲。');
@@ -2026,13 +2025,17 @@ function syncOutlinePrompt(project, chapter, prose) {
   lines.push('');
   lines.push('各项含义：');
   lines.push('- synopsis：这一章的故事梗概，写清起因、经过、转折、结果，供后续章节与世界观使用；300 字以内，纯文本。');
-  lines.push(`- durationDays：这段剧情在故事里覆盖的天数，整数 1–365。当前记为第 ${span.start}→${span.end} 天（共 ${span.end - span.start} 天），按正文实际推进判断是否需要改。`);
+  lines.push('- durationDays：这段剧情在故事内部推进了几天，整数 1–365。');
+  lines.push('  只看正文里的时间线索（清晨到入夜、翌日、过了三日、雨下到第几天……）来数；');
+  lines.push('  正文没有时间线索时按事件密度估计：一场连续场景通常算 1 天，跨几次昼夜就往上加；');
+  lines.push('  大多数章节在 1–7 天之间，只有正文明确跨越更久时才写更大的数。');
+  lines.push('  不要参考任何已有设定或历史记录，完全按这段正文判断，不要沿用「原来记了多少天」。');
   lines.push(`- minWords / maxWords：这一章应有的字数下限与上限，整数；本章正文实际 ${chars} 字，范围应当把 ${chars} 包在里面。`);
   lines.push('- synopsisMinChars：上面这段梗概算「合格」的最低字数，整数 20–400，取梗概长度的八成左右。');
   lines.push('');
-  const prelude = preludeBlock(project);
-  if (prelude !== '') lines.push(prelude);
-  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
+  // No time span and no preface here: this is a measurement of the text, and
+  // either would hand the model the answer it is supposed to derive.
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}`);
   lines.push(`【正文】（共 ${chars} 字，不含空白）`);
   lines.push(prose);
   return lines.join('\n');
@@ -2454,7 +2457,6 @@ const STYLE_MIN_CHARS = 300;
 const STYLE_MAX_CHARS = 600;
 
 function styleExtractPrompt(project, chapter, prose) {
-  const span = chapterWindow(project, chapter);
   const lines = [];
   lines.push('你是这部小说的文字编辑。请从下面这段正文里提取这篇小说的行文风格，写成可以直接当作「写作约束」使用的条目。');
   lines.push('');
@@ -2471,7 +2473,7 @@ function styleExtractPrompt(project, chapter, prose) {
   lines.push('- 不要出现「这段文字」「作者」之类的话，也不要评价好坏；');
   lines.push(`- 全文不超过 ${STYLE_MAX_CHARS} 字，宁可少写几条也要写得可执行。`);
   lines.push('');
-  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}（第 ${span.start}→${span.end} 天）`);
+  lines.push(`【本章】第 ${chapter.index + 1} 章 ${chapter.title || ''}`);
   lines.push('【正文】');
   lines.push(prose);
   return lines.join('\n');
