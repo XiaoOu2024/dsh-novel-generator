@@ -166,6 +166,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
   border:1px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
 .dsn-note{margin:0;padding:8px 12px;border-radius:10px;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1)}
+.dsn-note-row{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .dsn-empty{padding:32px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:13px}
 .dsn-toast{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:30;
   padding:8px 16px;border-radius:999px;font-size:12px;border-left:3px solid var(--dsw-alias-state-success-primary);
@@ -1576,7 +1577,18 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           ? h('div', { className: 'dsn-empty' }, t('还没有章节。点右上角「＋ 新建章节」开始第一章。', "No chapters yet. Use \"+ New chapter\" at the top right to start the first one."))
           : h(React.Fragment, null,
             h('div', { className: 'dsn-editor' },
-              !chapter.outline ? h('div', { className: 'dsn-note' }, t('这一章还没有保存过章节大纲，可以先回章节大纲里填写并生成。', "This chapter has no saved outline yet; fill one in under \"Outline\" and generate from there.")) : null,
+              !chapter.outline
+                ? (String(text || '').trim() === ''
+                  ? h('div', { className: 'dsn-note' }, t('这一章还没有章节大纲：先去「章节大纲」填写，再回来生成正文。', 'This chapter has no outline yet — fill one in under "Outline", then generate from there.'))
+                  : h('div', { className: 'dsn-note dsn-note-row' },
+                    h('span', null, t('这一章是导入的，没有章节大纲记录：点「同步章节大纲」会根据正文生成梗概与字数范围。', 'This chapter came from an import and has no outline recorded — “Sync outline” builds one from the text.')),
+                    h('button', {
+                      className: 'dsn-btn ghost',
+                      type: 'button',
+                      disabled: saving || Boolean(summarizing),
+                      onClick: onSummarize,
+                    }, t('现在同步', 'Sync now'))))
+                : null,
               h('textarea', {
                 className: 'dsn-textarea dsn-story',
                 value: text,
