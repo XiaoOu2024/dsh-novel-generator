@@ -722,7 +722,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
      * After a duration change moves the chapters that follow, the snapshots stay
      * where they were — this dialog is the only place the author learns about it.
      */
-    function ShiftNoticeDialog({ shiftDays, shifted, onClose, onGoTimeline }) {
+    function ShiftNoticeDialog({ shiftDays, shifted, scope, onClose, onGoTimeline }) {
       const list = Array.isArray(shifted) ? shifted : [];
       const sample = list.slice(0, 6);
       return h('div', { className: 'dsn-dialog-backdrop' },
@@ -731,7 +731,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('div', { className: 'dsn-title' }, t('时间线已顺移，快照需要你手动更新', 'The timeline moved — snapshots need updating')),
             h('div', { className: 'dsn-spacer' })),
           h('div', { className: 'dsn-dialog-body' },
-            h('div', { className: 'dsn-text span4' }, t('本章的时间长度改变了 {d} 天，之后 {n} 章已整体顺移，保持首尾相接：', 'This chapter’s length changed by {d} days, and {n} following chapters moved with it so the timeline stays contiguous:', { d: shiftDays > 0 ? `+${shiftDays}` : shiftDays, n: list.length })),
+            h('div', { className: 'dsn-text span4' }, scope === 'import'
+              ? t('导入时同步大纲改动了章节的时间长度，之后 {n} 章已整体顺移，保持首尾相接：', 'Syncing the imported chapters changed their lengths, and {n} following chapters moved with them so the timeline stays contiguous:', { n: list.length })
+              : t('本章的时间长度改变了 {d} 天，之后 {n} 章已整体顺移，保持首尾相接：', 'This chapter’s length changed by {d} days, and {n} following chapters moved with it so the timeline stays contiguous:', { d: shiftDays > 0 ? `+${shiftDays}` : shiftDays, n: list.length })),
             list.length > 0
               ? h('div', { className: 'dsn-importlist span4' },
                 sample.map((entry) => h('div', { key: entry.chapterId, className: 'dsn-importrow' },
@@ -1703,7 +1705,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('改写中…', 'Revising…') : t('确认修改', 'Revise')))));
     }
 
-    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange, onReviseSynopsis, synopsisDraft, onSynopsisDraftApplied, revisingSynopsis }) {
+    function OutlinePage({ detail, chapter, isFirstChapter, onBack, onSaved, notify, onRegisterGuard, requestConfirm, onBusyChange, onReviseSynopsis, synopsisDraft, onSynopsisDraftApplied, revisingSynopsis, onShiftNotice }) {
       const buildForm = useCallback(() => ({
         title: chapter ? chapter.title || '' : '',
         durationDays: chapter && chapter.outline ? chapter.outline.durationDays : (detail.timeline.unitDays || 30),
@@ -1761,6 +1763,10 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
           setSavedAt(Date.now());
           setDirty(false);
           if (silent !== true) notify(t('章节大纲已保存', "Outline saved"), 'success');
+          // A length change moved the chapters after it; snapshots did not follow.
+          if (result.shiftDays && Array.isArray(result.shifted) && result.shifted.length > 0) {
+            if (typeof onShiftNotice === 'function') onShiftNotice({ shiftDays: result.shiftDays, shifted: result.shifted });
+          }
           await onSaved(result.chapter.chapterId);
           return true;
         } catch (error) {
@@ -1769,7 +1775,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
         } finally {
           setSaving(false);
         }
-      }, [complete, detail.projectId, chapter, form, onSaved, notify]);
+      }, [complete, detail.projectId, chapter, form, onSaved, notify, onShiftNotice]);
 
       // The workspace asks this page before any navigation discards its edits.
       const guardRef = useRef(null);
@@ -2759,6 +2765,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               synopsisDraft,
               onSynopsisDraftApplied: () => setSynopsisDraft(null),
               revisingSynopsis,
+              onShiftNotice: setShiftNotice,
               isFirstChapter: Boolean(chapter && chapters.length > 0 && chapter.chapterId === chapters[0].chapterId),
             }))),
         shiftNotice
@@ -2881,6 +2888,9 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [presetTarget, setPresetTarget] = useState(null);
       const [preludeTarget, setPreludeTarget] = useState(null);
       const [importTarget, setImportTarget] = useState(null);
+      // Import's outline sync can move chapters too; the notice belongs here
+      // because the import dialog closes before the shift is known.
+      const [shiftNotice, setShiftNotice] = useState(null);
       const leaveGuard = useRef(null);
       const registerLeaveGuard = useCallback((guard) => {
         leaveGuard.current = guard;
@@ -3020,6 +3030,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             resolveWorkspace,
             onCancel: () => setImportTarget(null),
             onDone: async (result) => {
+              const finished = importTarget;
               setImportTarget(null);
               await loadBoot();
               const imported = (result.imported || []).length;
@@ -3035,6 +3046,26 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               }));
               if (result.snapshotJobId) parts.push(t('世界快照已开始生成', 'World snapshot started'));
               setToast({ text: parts.join('；'), kind: failed > 0 ? 'error' : 'success' });
+              if (result.shiftDays && Array.isArray(result.shifted) && result.shifted.length > 0) {
+                setShiftNotice({
+                  shiftDays: result.shiftDays,
+                  shifted: result.shifted,
+                  projectId: finished ? finished.projectId : '',
+                });
+              }
+            },
+          })
+          : null,
+        shiftNotice
+          ? h(ShiftNoticeDialog, {
+            shiftDays: shiftNotice.shiftDays,
+            shifted: shiftNotice.shifted,
+            scope: 'import',
+            onClose: () => setShiftNotice(null),
+            onGoTimeline: () => {
+              const targetId = shiftNotice.projectId || '';
+              setShiftNotice(null);
+              if (targetId !== '') openProject(targetId);
             },
           })
           : null,

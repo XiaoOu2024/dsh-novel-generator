@@ -214,3 +214,6 @@ package.json	|	2026-10-29 20:10	|	0.1.38
 index.js	|	2026-10-29 21:05	|	同步大纲采用实测时长并顺移后续章节（keepDuration 供导入复用）；返回 shiftDays/shifted
 client.js	|	2026-10-29 21:05	|	顺移后弹窗提示快照未随之移动，可一键跳到时间长河
 package.json	|	2026-10-29 21:05	|	0.1.39
+index.js	|	2026-10-29 21:40	|	时长变化统一走 applyDurationShift：保存大纲、同步大纲、导入同步、自动推演都会顺移后续章节
+client.js	|	2026-10-29 21:40	|	保存大纲与导入后的顺移也弹窗提示（导入用单独措辞）；ShiftNoticeDialog 增加 scope
+package.json	|	2026-10-29 21:40	|	0.1.40

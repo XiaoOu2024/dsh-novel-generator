@@ -1499,7 +1499,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-29.2',
+    revision: '2026-10-29.3',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2103,10 +2103,7 @@ async function startSyncOutline(ctx, root, registry, body) {
  * back into its outline". Used by the story page's button and by chapter import,
  * so both produce identical outlines.
  */
-async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note, options = {}) {
-  // Import sets the per-chapter length explicitly, so its sync keeps that number
-  // and never shifts the chapters that follow.
-  const keepDuration = options.keepDuration === true;
+async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note) {
   const project = await readProject(root, projectId);
   const chapter = project.chapters.find((entry) => entry.chapterId === chapterId);
   if (!chapter) throw httpError(404, `章节不存在: ${chapterId}`);
@@ -2143,12 +2140,11 @@ async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note, 
   // The measured duration wins, and the timeline stays contiguous: every later
   // chapter moves with it. Snapshots are deliberately left where they are — the
   // Client tells the author to regenerate the ones that no longer line up.
-  let durationDays = chapter.durationDays;
   const proposed = Number.isFinite(Number(parsed.durationDays))
     ? Math.max(1, Math.min(365, Math.round(Number(parsed.durationDays))))
     : null;
-  const shiftDays = proposed !== null && !keepDuration ? proposed - chapter.durationDays : 0;
-  if (proposed !== null && !keepDuration) durationDays = proposed;
+  let durationDays = proposed === null ? chapter.durationDays : proposed;
+  let shiftDays = 0;
   const shifted = [];
 
   const saved = await mutateProject(root, projectId, (draft) => {
@@ -2163,18 +2159,14 @@ async function syncChapterOutline(ctx, root, projectId, chapterId, prose, note, 
       synopsisMinChars,
       savedAt: Date.now(),
     };
-    target.durationDays = durationDays;
     target.updatedAt = Date.now();
-    if (shiftDays !== 0) {
-      for (const other of draft.chapters) {
-        if (other.chapterId === target.chapterId) continue;
-        if (other.startDay < span.start) continue;
-        const from = other.startDay;
-        other.startDay = Math.max(span.start + 1, from + shiftDays);
-        other.updatedAt = Date.now();
-        shifted.push({ chapterId: other.chapterId, title: other.title, fromDay: from, toDay: other.startDay });
-      }
-    }
+    // Shared with the outline save and chapter import: any length change moves
+    // the chapters that follow.
+    const moved = applyDurationShift(draft.chapters, target, durationDays);
+    durationDays = target.durationDays;
+    shiftDays = moved.shiftDays;
+    shifted.push(...moved.shifted);
+    target.outline.durationDays = durationDays;
     return { chapter: { ...target, content: undefined }, project: summarize(draft) };
   });
   const fresh = await readProject(root, projectId);
@@ -2423,6 +2415,8 @@ async function startImportChapters(ctx, root, registry, body) {
     }
 
     const synced = [];
+    const shifted = [];
+    let shiftDaysTotal = 0;
     if (syncOutline && imported.length > 0) {
       for (let index = 0; index < imported.length; index += 1) {
         const entry = imported[index];
@@ -2432,8 +2426,17 @@ async function startImportChapters(ctx, root, registry, body) {
           const chapter = project.chapters.find((item) => item.chapterId === entry.chapterId);
           const result = await syncChapterOutline(ctx, root, projectId, entry.chapterId, chapter ? (chapter.content || '') : '', (note) => {
             job.message = note;
-          }, { keepDuration: true });
+          });
           synced.push({ chapterId: entry.chapterId, synopsisChars: (result.synopsis || '').length });
+          for (const move of (result.shifted || [])) {
+            const seen = shifted.find((item) => item.chapterId === move.chapterId);
+            if (seen) {
+              seen.toDay = move.toDay;
+            } else {
+              shifted.push({ ...move });
+            }
+          }
+          shiftDaysTotal += Number(result.shiftDays) || 0;
         } catch (error) {
           failed.push({ fileName: entry.title, reason: `同步大纲失败：${error instanceof Error ? error.message : String(error)}` });
         }
@@ -2454,6 +2457,8 @@ async function startImportChapters(ctx, root, registry, body) {
       skipped,
       failed,
       synced,
+      shifted,
+      shiftDays: shiftDaysTotal,
       snapshotJobId,
       project: summarize(await readProject(root, projectId)),
     };
@@ -2603,6 +2608,33 @@ function nextChapterIndex(project) {
   return max + 1;
 }
 
+/**
+ * Keep story time contiguous after one chapter's length changes.
+ *
+ * The chapter takes the new length and every chapter starting at or after it
+ * moves by the same number of days, so the timeline never opens a gap or an
+ * overlap. Snapshots are not touched — the Client tells the author to update
+ * them. Returns the moves so callers can report them.
+ */
+function applyDurationShift(chapters, chapter, nextDuration) {
+  const previous = Math.max(1, Math.round(Number(chapter.durationDays) || 1));
+  const next = Math.max(1, Math.round(Number(nextDuration) || previous));
+  const shifted = [];
+  chapter.durationDays = next;
+  const delta = next - previous;
+  if (delta === 0) return { shiftDays: 0, shifted };
+  const start = Math.max(0, Math.round(Number(chapter.startDay) || 0));
+  for (const other of chapters) {
+    if (other.chapterId === chapter.chapterId) continue;
+    if ((Number(other.startDay) || 0) < start) continue;
+    const from = other.startDay;
+    other.startDay = Math.max(start + 1, from + delta);
+    other.updatedAt = Date.now();
+    shifted.push({ chapterId: other.chapterId, title: other.title, fromDay: from, toDay: other.startDay });
+  }
+  return { shiftDays: delta, shifted };
+}
+
 async function saveOutline(ctx, root, registry, body) {
   const projectId = asText(body.projectId);
   const chapterId = asText(body.chapterId);
@@ -2614,6 +2646,7 @@ async function saveOutline(ctx, root, registry, body) {
   let savedProject = null;
   let savedChapter = null;
   let renamedFrom = null;
+  let outlineShift = { shiftDays: 0, shifted: [] };
   const result = await mutateProject(root, projectId, (project) => {
     let chapter = chapterId === '' ? null : project.chapters.find((entry) => entry.chapterId === chapterId);
     if (!chapter) {
@@ -2637,7 +2670,10 @@ async function saveOutline(ctx, root, registry, body) {
     }
     if (title !== '') chapter.title = title;
     chapter.outline = outline;
-    chapter.durationDays = outline.durationDays;
+    // Length changes move the chapters after this one, whatever the caller is.
+    const moved = applyDurationShift(project.chapters, chapter, outline.durationDays);
+    outlineShift = moved;
+    chapter.outline.durationDays = chapter.durationDays;
     if (chapter.status === 'draft') chapter.status = 'outlined';
     chapter.updatedAt = Date.now();
     savedProject = project;
@@ -2668,7 +2704,13 @@ async function saveOutline(ctx, root, registry, body) {
       snapshotJobId = registerSnapshot(ctx, root, registry, projectId, target).jobId;
     }
   }
-  return snapshotJobId === null ? result : { ...result, snapshotJobId };
+  return {
+    ...result,
+    ...(snapshotJobId === null ? {} : { snapshotJobId }),
+    ...(outlineShift.shifted.length === 0
+      ? {}
+      : { shiftDays: outlineShift.shiftDays, shifted: outlineShift.shifted }),
+  };
 }
 
 async function saveChapter(ctx, root, registry, body) {
@@ -3133,6 +3175,8 @@ async function startCompose(ctx, root, registry, body) {
     const existing = existingId === ''
       ? null
       : (project.chapters || []).find((entry) => entry.chapterId === existingId) || null;
+    // Set inside the mutation below when re-deducing moves the chapters after it.
+    let composeShift = { shiftDays: 0, shifted: [] };
     if (existingId !== '' && !existing) throw httpError(404, `章节不存在: ${existingId}`);
 
     // The first chapter of a work has no snapshot and no previous chapter, so
@@ -3183,9 +3227,12 @@ async function startCompose(ctx, root, registry, body) {
       const target = current.chapters.find((entry) => entry.chapterId === draft.chapterId);
       if (target) {
         target.title = title;
-        target.durationDays = durationDays;
         target.outline = outline;
         target.updatedAt = Date.now();
+        // Re-deducing an existing chapter can change its length too.
+        const moved = applyDurationShift(current.chapters, target, durationDays);
+        composeShift = moved;
+        target.outline.durationDays = target.durationDays;
       } else {
         current.chapters.push({
           ...draft,
@@ -3238,6 +3285,8 @@ async function startCompose(ctx, root, registry, body) {
       synopsis,
       wordCount: wordCount(content),
       snapshotJobId,
+      shiftDays: composeShift.shiftDays,
+      shifted: composeShift.shifted,
     };
   });
 }
