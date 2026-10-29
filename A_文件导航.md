@@ -217,3 +217,6 @@ package.json	|	2026-10-29 21:05	|	0.1.39
 index.js	|	2026-10-29 21:40	|	时长变化统一走 applyDurationShift：保存大纲、同步大纲、导入同步、自动推演都会顺移后续章节
 client.js	|	2026-10-29 21:40	|	保存大纲与导入后的顺移也弹窗提示（导入用单独措辞）；ShiftNoticeDialog 增加 scope
 package.json	|	2026-10-29 21:40	|	0.1.40
+index.js	|	2026-10-29 22:30	|	写作与推演提示词加入上一章正文（full/half/none 三档，8000 字上限，尾部保留）；新增 /project/settings
+client.js	|	2026-10-29 22:30	|	作品行加「设置」按钮与 SettingsDialog（前文参考程度三选一）
+package.json	|	2026-10-29 22:30	|	0.1.41

@@ -751,6 +751,64 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             h('button', { className: 'dsn-btn primary', type: 'button', onClick: onGoTimeline }, t('去时间长河', 'Open timeline')))));
     }
 
+    /**
+     * Work settings. The first section decides how much of the previous chapter's
+     * prose the writing and deduction prompts carry — the knob that trades
+     * continuity against prompt size.
+     */
+    function SettingsDialog({ project, onCancel, onSaved }) {
+      const [reference, setReference] = useState(project.reference || 'full');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+
+      const save = useCallback(async () => {
+        setBusy(true);
+        setError('');
+        try {
+          await api('/project/settings', { projectId: project.projectId, reference });
+          await onSaved(reference);
+        } catch (saveError) {
+          setError(messageOf(saveError));
+        } finally {
+          setBusy(false);
+        }
+      }, [project.projectId, reference, onSaved]);
+
+      const option = (value, title, hint) => h('label', { className: 'dsn-check', style: { alignItems: 'flex-start' } },
+        h('input', {
+          type: 'radio',
+          name: 'dsn-reference',
+          checked: reference === value,
+          onChange: () => setReference(value),
+        }),
+        h('span', null,
+          h('div', null, title),
+          h('div', { className: 'dsn-hint' }, hint)));
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(560px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('作品设置', 'Work settings')),
+            h('div', { className: 'dsn-sub' }, project.title),
+            h('div', { className: 'dsn-spacer' })),
+          h('div', { className: 'dsn-dialog-body' },
+            h('div', { className: 'dsn-label span4' }, t('自动推演 / 生成章节故事 · 前文参考程度', 'Auto-deduction / chapter generation · previous text')),
+            h('div', { className: 'dsn-field span4', style: { gap: 10 } },
+              option('full', t('前一章（全文）', 'Previous chapter (full text)'),
+                t('衔接最稳，提示词最长：前一章整章正文都会带上（超过 8000 字只给最后 8000 字）。', 'Best continuity, longest prompt: the whole previous chapter, trimmed to its last 8000 characters when it is longer.')),
+              option('half', t('前一章的后一半', 'Previous chapter (second half)'),
+                t('折中：只给后一半，通常足够接住语气与场景，提示词短不少。', 'A middle ground: the second half, usually enough to pick up the voice and the scene, and much shorter.')),
+              option('none', t('不参考正文', 'No prose reference'),
+                t('只靠世界快照与各章梗概推进；最省上下文，但接续会偏生硬。', 'Only snapshots and synopses drive it — cheapest, but the join can feel abrupt.'))),
+            h('div', { className: 'dsn-hint span4' }, t('改动下一次生成就生效，不影响已有章节。', 'Applies to the next generation; existing chapters are untouched.')),
+            error ? h('div', { className: 'dsn-hint warn span4' }, error) : null),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('button', { className: 'dsn-btn ghost', type: 'button', disabled: busy, onClick: onCancel }, t('取消', 'Cancel')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn primary', type: 'button', disabled: busy, onClick: save },
+              busy ? t('保存中…', 'Saving…') : t('保存', 'Save')))));
+    }
+
     function PresetDialog({ project, presets, onCancel, onSaved }) {
       const [preset, setPreset] = useState(project.agentPreset || '');
       const [busy, setBusy] = useState(false);
@@ -874,7 +932,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', 'Saving…') : t('保存', 'Save')))));
     }
 
-    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude, onImport }) {
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude, onImport, onSettings }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -1128,6 +1186,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onEditPrelude(project);
               },
             }, t('前置', 'Preface')),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('作品设置：自动推演与生成正文时对前文的参考程度', 'Work settings: how much previous text the writing prompts carry'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onSettings(project);
+              },
+            }, t('设置', 'Settings')),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
@@ -2888,6 +2955,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [presetTarget, setPresetTarget] = useState(null);
       const [preludeTarget, setPreludeTarget] = useState(null);
       const [importTarget, setImportTarget] = useState(null);
+      const [settingsTarget, setSettingsTarget] = useState(null);
       // Import's outline sync can move chapters too; the notice belongs here
       // because the import dialog closes before the shift is known.
       const [shiftNotice, setShiftNotice] = useState(null);
@@ -2985,6 +3053,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onEditPreset: setPresetTarget,
                   onEditPrelude: setPreludeTarget,
                   onImport: setImportTarget,
+                  onSettings: setSettingsTarget,
                 }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
@@ -3053,6 +3122,20 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   projectId: finished ? finished.projectId : '',
                 });
               }
+            },
+          })
+          : null,
+        settingsTarget
+          ? h(SettingsDialog, {
+            project: settingsTarget,
+            onCancel: () => setSettingsTarget(null),
+            onSaved: async (reference) => {
+              setSettingsTarget(null);
+              await loadBoot();
+              const label = reference === 'full'
+                ? t('前一章全文', 'the full previous chapter')
+                : (reference === 'half' ? t('前一章的后一半', 'the second half of the previous chapter') : t('不参考正文', 'no prose reference'));
+              setToast({ text: t('已保存：前文参考程度 = {label}', 'Saved: previous-text reference = {label}', { label }), kind: 'success' });
             },
           })
           : null,

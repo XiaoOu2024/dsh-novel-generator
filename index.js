@@ -358,6 +358,8 @@ async function exportProjectInfo(project) {
     lines.push(`- 预设：${project.agentPreset || '（默认）'}`);
     const preludeText = project.prelude && project.prelude.text ? String(project.prelude.text).trim() : '';
     lines.push(`- 前置提示词：${preludeText === '' ? '（未设置）' : '已设置，见文末'}`);
+    const referenceLabel = { full: '前一章全文', half: '前一章的后一半', none: '不参考' }[normalizeReference(project.reference)];
+    lines.push(`- 前文参考程度：${referenceLabel}`);
     lines.push(`- 快照间隔：每 ${timeline.unitDays || 30} 天一份`);
     lines.push(`- 已写入快照：${snapshots.length ? snapshots.map((snapshot) => `第 ${snapshot.day} 天`).join('、') : '（暂无）'}`);
     lines.push(`- 故事当前：第 ${lastChapterEnd(project)} 天`);
@@ -675,6 +677,8 @@ function summarize(project) {
     // The work-wide preface prompt: narrative angle plus anything else the
     // author wants every request to carry.
     prelude: project.prelude || null,
+    // How much of the previous chapter's prose the writing prompts carry.
+    reference: normalizeReference(project.reference),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     chapterCount: chapters.length,
@@ -1234,6 +1238,72 @@ function stretchLines(project, chapter, snapshot) {
   return lines;
 }
 
+/* --------------------------------------------------- previous-chapter text */
+
+/** How much of the previous chapter's prose a writing prompt carries. */
+const REFERENCE_MODES = ['full', 'half', 'none'];
+const DEFAULT_REFERENCE = 'full';
+/** Hard ceiling on the quoted prose, so a long chapter cannot swamp the prompt. */
+const REFERENCE_MAX_CHARS = 8000;
+
+function normalizeReference(value) {
+  const mode = asText(value);
+  return REFERENCE_MODES.includes(mode) ? mode : DEFAULT_REFERENCE;
+}
+
+/** The tail of `text` from its halfway sentence boundary, for the `half` mode. */
+function secondHalfText(text) {
+  const source = String(text || '');
+  if (source.length === 0) return '';
+  const middle = Math.floor(source.length / 2);
+  const stops = ['。', '！', '？', '…', '\n'];
+  let cut = -1;
+  for (let index = middle; index < Math.min(source.length, middle + 400); index += 1) {
+    if (stops.includes(source[index])) {
+      cut = index + 1;
+      break;
+    }
+  }
+  if (cut < 0) {
+    for (let index = middle; index > Math.max(0, middle - 400); index -= 1) {
+      if (stops.includes(source[index])) {
+        cut = index + 1;
+        break;
+      }
+    }
+  }
+  return source.slice(cut < 0 ? middle : cut).trim();
+}
+
+/**
+ * The previous chapter's prose, per the work's reference setting.
+ *
+ * Long chapters are trimmed from the front: what matters for continuity is how
+ * the previous chapter *ends*, since this one has to continue from there.
+ */
+function previousProseBlock(project, chapter, label) {
+  const mode = normalizeReference(project.reference);
+  if (mode === 'none') return [];
+  const previous = previousChapter(project, chapter);
+  if (!previous) return [];
+  const raw = String(previous.content || '');
+  if (raw.trim() === '') return [];
+  let text = mode === 'half' ? secondHalfText(raw) : raw.trim();
+  let truncated = false;
+  if (text.length > REFERENCE_MAX_CHARS) {
+    text = text.slice(text.length - REFERENCE_MAX_CHARS);
+    truncated = true;
+  }
+  const span = chapterWindow(project, previous);
+  const lines = [];
+  lines.push(`【${label || '上一章正文'}】（第 ${previous.index + 1} 章 ${previous.title || ''}，第 ${span.start}→${span.end} 天）`);
+  if (truncated) lines.push(`（正文较长，只给最后 ${REFERENCE_MAX_CHARS} 字）`);
+  if (mode === 'half') lines.push('（只给后一半，用来衔接语气与场景）');
+  lines.push(text);
+  lines.push('');
+  return lines;
+}
+
 function chapterPrompt(project, chapter, previous) {
   const window = chapterWindow(project, chapter);
   const outline = chapter.outline || {};
@@ -1260,6 +1330,9 @@ function chapterPrompt(project, chapter, previous) {
     lines.push(`${previous.title || ''}：${(previous.outline && previous.outline.synopsis) || '（无）'}`);
     lines.push('');
   }
+  // The previous chapter's own prose, so the new chapter continues in the same
+  // voice and picks up from the exact scene it ended on.
+  lines.push(...previousProseBlock(project, chapter, '上一章正文 · 供衔接'));
   lines.push('【本章梗概 · 待生成的部分】');
   lines.push(outline.synopsis || '（无）');
   lines.push('');
@@ -1288,6 +1361,9 @@ function deducePrompt(project, chapter) {
   lines.push('');
   const stretch = stretchLines(project, target, snapshot);
   if (stretch.length) lines.push(...stretch);
+  // Auto-deduction reads the previous chapter's prose too, so the synopsis it
+  // invents follows on from what was actually written.
+  lines.push(...previousProseBlock(project, target, '上一章正文 · 供衔接'));
   lines.push('【输出 JSON 结构】');
   lines.push('{"synopsis": "本章梗概，300 字以内，包含起因、经过、转折", "durationDays": 30, "minWords": 1200, "maxWords": 3500, "title": "本章标题"}');
   lines.push('');
@@ -1499,7 +1575,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-29.3',
+    revision: '2026-10-29.4',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -1578,6 +1654,8 @@ async function createProject(ctx, root, body) {
     // Every new work starts with the default narrative preface; the author can
     // edit or clear it from the work list.
     prelude: defaultPrelude(),
+    // Previous-chapter prose in writing prompts: full text by default.
+    reference: DEFAULT_REFERENCE,
     sessionId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -1954,6 +2032,22 @@ function defaultPrelude() {
  * from; the text itself is what every request carries, so the author can edit a
  * preset's wording or write their own.
  */
+/** Work-level settings: how much of the previous chapter the prompts carry. */
+async function updateSettings(root, body) {
+  const projectId = asText(body.projectId);
+  const reference = asText(body.reference);
+  if (reference !== '' && !REFERENCE_MODES.includes(reference)) {
+    throw httpError(400, `参考程度只能是 ${REFERENCE_MODES.join(' / ')}`);
+  }
+  const project = await mutateProject(root, projectId, (draft) => {
+    draft.reference = normalizeReference(reference);
+    draft.updatedAt = Date.now();
+    return summarize(draft);
+  });
+  await exportProjectInfo(await readProject(root, projectId));
+  return { project };
+}
+
 async function updatePrelude(root, body) {
   const projectId = asText(body.projectId);
   const mode = asText(body.mode);
@@ -3417,6 +3511,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startStyleExtract(ctx, root, registry, body);
     case '/style/apply':
       return startStyleApply(ctx, root, registry, body);
+    case '/project/settings':
+      return updateSettings(root, body);
     case '/import/apply':
       return startImportChapters(ctx, root, registry, body);
     case '/outline/revise':
