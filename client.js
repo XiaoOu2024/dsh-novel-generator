@@ -268,6 +268,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
 .dsn-importtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
 .dsn-importchars{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 .dsn-importwarn{color:var(--dsw-alias-state-warn-primary)}
+.dsn-prompt-body{display:flex;gap:12px;min-height:320px;max-height:min(58vh,520px)}
+.dsn-prompt-list{display:flex;flex-direction:column;gap:4px;min-width:150px;overflow:auto}
+.dsn-prompt-item{text-align:left;font-size:12px;padding:7px 10px;border-radius:8px;cursor:pointer;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary)}
+.dsn-prompt-item:hover{background:var(--dsw-alias-bg-layer-3)}
+.dsn-prompt-item.active{background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);
+  border-color:var(--dsw-alias-border-l2)}
+.dsn-prompt-pane{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.dsn-prompt-when{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsn-prompt-text{flex:1;margin:0;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.65;
+  padding:10px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);
+  background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary)}
 .dsn-progress{font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;gap:8px}
 .dsn-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--dsw-alias-border-l2);
   border-top-color:var(--dsw-alias-brand-primary);animation:dsn-spin .9s linear infinite}
@@ -858,6 +871,85 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
     }
 
     /**
+     * Read-only view of every prompt the plugin sends, with the work's own text
+     * replaced by placeholders. The Host renders the real builders, so what is
+     * shown here is the actual structure — it cannot drift from what is sent.
+     */
+    function PromptsDialog({ project, onCancel }) {
+      const [data, setData] = useState(null);
+      const [active, setActive] = useState('');
+      const [error, setError] = useState('');
+      const [copied, setCopied] = useState(false);
+
+      useEffect(() => {
+        let alive = true;
+        (async () => {
+          try {
+            const result = await api('/prompts/template', { projectId: project.projectId });
+            if (!alive) return;
+            setData(result);
+            setActive(result.modules && result.modules.length ? result.modules[0].id : '');
+          } catch (loadError) {
+            if (alive) setError(messageOf(loadError));
+          }
+        })();
+        return () => { alive = false; };
+      }, [project.projectId]);
+
+      const modules = data ? data.modules : [];
+      const current = modules.find((entry) => entry.id === active) || modules[0] || null;
+
+      const copy = useCallback(async () => {
+        if (!current) return;
+        try {
+          await navigator.clipboard.writeText(current.text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          setCopied(false);
+        }
+      }, [current]);
+
+      return h('div', { className: 'dsn-dialog-backdrop' },
+        h('div', { className: 'dsn-dialog', style: { width: 'min(980px, calc(100% - 48px))' } },
+          h('div', { className: 'dsn-dialog-head' },
+            h('div', { className: 'dsn-title' }, t('提示词一览', 'Prompts')),
+            h('div', { className: 'dsn-sub' }, project.title),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn ghost', type: 'button', onClick: onCancel }, t('关闭', 'Close'))),
+          h('div', { className: 'dsn-prompt-body' },
+            h('div', { className: 'dsn-prompt-list' },
+              modules.map((entry) => h('button', {
+                key: entry.id,
+                type: 'button',
+                className: `dsn-prompt-item${entry.id === active ? ' active' : ''}`,
+                onClick: () => setActive(entry.id),
+              }, entry.title))),
+            h('div', { className: 'dsn-prompt-pane' },
+              current
+                ? h(React.Fragment, null,
+                  h('div', { className: 'dsn-prompt-when' }, current.when),
+                  h('pre', { className: 'dsn-prompt-text' }, current.text))
+                : null,
+              error ? h('div', { className: 'dsn-hint warn' }, error) : null,
+              data && data.settings
+                ? h('div', { className: 'dsn-hint' },
+                  t('当前设置：前文参考程度 = {ref}；前置提示词 = {prelude}；快照间隔 = 每 {days} 天',
+                    'Current settings: previous-text reference = {ref}; preface = {prelude}; snapshot interval = every {days} days',
+                    {
+                      ref: data.settings.referenceLabel,
+                      prelude: data.settings.preludeSet ? t('已设置', 'set') : t('未设置', 'not set'),
+                      days: data.settings.unitDays,
+                    }))
+                : null)),
+          h('div', { className: 'dsn-dialog-foot' },
+            h('div', { className: 'dsn-hint' }, t('只读：花括号 ｛｝ 里是活数据占位，实际生成时会替换成你的内容。', 'Read-only: text in ｛｝ is a placeholder for live data, replaced with your own content when generating.')),
+            h('div', { className: 'dsn-spacer' }),
+            h('button', { className: 'dsn-btn', type: 'button', disabled: !current, onClick: copy },
+              copied ? t('已复制', 'Copied') : t('复制全文', 'Copy')))));
+    }
+
+    /**
      * The work-wide preface prompt: a narrative angle preset plus anything else
      * the author wants pinned in front of every request. The preset wording comes
      * from the Host so there is one copy of the text.
@@ -932,7 +1024,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
             }, busy ? t('保存中…', 'Saving…') : t('保存', 'Save')))));
     }
 
-    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude, onImport, onSettings }) {
+    function ProjectsPage({ boot, resolveWorkspace, onOpen, onReload, onEditModel, onEditPreset, onEditPrelude, onImport, onSettings, onPrompts }) {
       const [title, setTitle] = useState('');
       const [cwd, setCwd] = useState('');
       const [preset, setPreset] = useState('');
@@ -1195,6 +1287,15 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 onSettings(project);
               },
             }, t('设置', 'Settings')),
+            h('button', {
+              className: 'dsn-btn ghost',
+              type: 'button',
+              title: t('查看插件会发送的全部提示词（只读，变量用占位符）', 'See every prompt the plugin sends (read-only, variables as placeholders)'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onPrompts(project);
+              },
+            }, t('提示词', 'Prompts')),
             h('button', {
               className: 'dsn-btn ghost',
               type: 'button',
@@ -2956,6 +3057,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
       const [preludeTarget, setPreludeTarget] = useState(null);
       const [importTarget, setImportTarget] = useState(null);
       const [settingsTarget, setSettingsTarget] = useState(null);
+      const [promptsTarget, setPromptsTarget] = useState(null);
       // Import's outline sync can move chapters too; the notice belongs here
       // because the import dialog closes before the shift is known.
       const [shiftNotice, setShiftNotice] = useState(null);
@@ -3054,6 +3156,7 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                   onEditPrelude: setPreludeTarget,
                   onImport: setImportTarget,
                   onSettings: setSettingsTarget,
+                  onPrompts: setPromptsTarget,
                 }))
               : detail === null
                 ? h('div', { className: 'dsn-empty', style: { margin: 'auto' } }, t('正在载入作品…', "Loading the work…"))
@@ -3123,6 +3226,12 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
                 });
               }
             },
+          })
+          : null,
+        promptsTarget
+          ? h(PromptsDialog, {
+            project: promptsTarget,
+            onCancel: () => setPromptsTarget(null),
           })
           : null,
         settingsTarget

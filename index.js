@@ -1575,7 +1575,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-29.4',
+    revision: '2026-10-30.3',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2665,6 +2665,159 @@ async function startStyleApply(ctx, root, registry, body) {
   });
 }
 
+/* ------------------------------------------------------ prompt templates */
+
+/**
+ * A stand-in project whose *content* is placeholder text.
+ *
+ * The point is that the panel renders the real prompt builders instead of a
+ * hand-written copy of them: the structure can never drift from what is actually
+ * sent, and the author's own text is never read or echoed.
+ */
+function placeholderProject(project) {
+  const snapshot = {
+    snapshotId: 'placeholder',
+    day: 30,
+    createdAt: 0,
+    unitDays: 30,
+    world: '｛世界观：随故事推进更新的设定｝',
+    characters: [{ name: '｛角色名｝', desc: '｛身份、处境、变化｝' }],
+    factions: [{ name: '｛势力名｝', desc: '｛当前状态｝' }],
+    // Relations are stored as plain strings ("A B 师徒"), which is what the
+    // snapshot prompt asks the model for; the placeholder has to match.
+    relations: ['｛角色A｝ ｛角色B｝ ｛关系，例如 师徒｝'],
+    items: [{ name: '｛物品名｝', desc: '｛下落或用途｝' }],
+    events: [{ day: 20, title: '｛事件标题｝', desc: '｛一句话经过｝' }],
+    summary: '｛这段时间的梗概｝',
+  };
+  const previous = {
+    chapterId: 'placeholder-previous',
+    index: 0,
+    title: '｛上一章标题｝',
+    startDay: 30,
+    durationDays: 30,
+    wordCount: 0,
+    status: 'generated',
+    createdAt: 0,
+    updatedAt: 0,
+    content: '｛上一章正文：按你的「前文参考程度」决定给多少｝',
+    outline: {
+      synopsis: '｛上一章梗概｝',
+      minWords: 800,
+      maxWords: 3000,
+      durationDays: 30,
+      synopsisMinChars: 100,
+      savedAt: 0,
+    },
+  };
+  const current = {
+    chapterId: 'placeholder-current',
+    index: 1,
+    title: '｛本章标题｝',
+    startDay: 60,
+    durationDays: 30,
+    wordCount: 0,
+    status: 'outlined',
+    createdAt: 0,
+    updatedAt: 0,
+    content: '',
+    outline: {
+      synopsis: '｛本章梗概：你在大纲页填写的内容｝',
+      minWords: 800,
+      maxWords: 3000,
+      durationDays: 30,
+      synopsisMinChars: 100,
+      savedAt: 0,
+    },
+  };
+  return {
+    ...project,
+    prelude: { mode: 'custom', text: '｛本书前置提示词：你在「前置」里写的文本｝', updatedAt: 0 },
+    snapshots: [snapshot],
+    chapters: [previous, current],
+    timeline: { ...(project.timeline || {}), unitDays: 30 },
+    reference: normalizeReference(project.reference),
+  };
+}
+
+/** Every prompt the plugin sends, rendered against placeholder content. */
+function promptTemplates(project) {
+  const stub = placeholderProject(project);
+  const [previous, current] = stub.chapters;
+  const mode = normalizeReference(project.reference);
+  const modules = [
+    {
+      id: 'prelude',
+      title: '本书前置设定',
+      when: '写正文 / 自动推演 / AI 修改正文 / AI 修改梗概 / 提取行文风格 / 整理前置 —— 都会放在最前面',
+      text: preludeBlock(stub),
+    },
+    {
+      id: 'chapter',
+      title: '写章节正文',
+      when: '点「生成章节故事」，或「自动推演」走到写正文那一步',
+      text: chapterPrompt(stub, current, previous),
+    },
+    {
+      id: 'deduce',
+      title: '自动推演大纲',
+      when: '点「自动推演」（先推梗概、标题、时长与字数范围）',
+      text: deducePrompt(stub, current),
+    },
+    {
+      id: 'snapshot',
+      title: '世界快照',
+      when: '点「生成世界快照」，或章节推进到网格点时自动触发',
+      text: snapshotPrompt(stub, stub.snapshots[0], [previous], 60),
+    },
+    {
+      id: 'syncOutline',
+      title: '同步章节大纲',
+      when: '点「同步章节大纲」，或导入章节时勾选了自动同步',
+      text: syncOutlinePrompt(stub, current, '｛本章正文｝'),
+    },
+    {
+      id: 'revise',
+      title: 'AI 修改正文',
+      when: '故事页点「AI 修改」并填入修改意见',
+      text: revisePrompt(stub, current, '｛本章现有正文｝', '｛你填的修改意见｝'),
+    },
+    {
+      id: 'synopsisRevise',
+      title: 'AI 修改梗概',
+      when: '大纲页点「AI 修改梗概」并填入修改意见',
+      text: synopsisRevisePrompt(stub, current, '｛现有故事梗概｝', '｛你填的修改意见｝'),
+    },
+    {
+      id: 'styleExtract',
+      title: '提取行文风格',
+      when: '故事页点「提取行文风格」',
+      text: styleExtractPrompt(stub, current, '｛本章正文：至少 300 字才会提取｝'),
+    },
+    {
+      id: 'styleMerge',
+      title: '整理进前置',
+      when: '风格面板里点「写入前置」',
+      text: styleMergePrompt('｛现有前置提示词｝', '｛提取出的行文风格｝'),
+    },
+  ];
+  return {
+    modules,
+    settings: {
+      reference: mode,
+      referenceLabel: { full: '前一章全文', half: '前一章的后一半', none: '不参考正文' }[mode],
+      preludeSet: Boolean(project.prelude && project.prelude.text),
+      unitDays: Math.max(1, Number(project.timeline && project.timeline.unitDays) || 30),
+    },
+  };
+}
+
+async function readPromptTemplates(root, body) {
+  const projectId = asText(body.projectId);
+  const project = await readProject(root, projectId);
+  return promptTemplates(project);
+}
+
 async function updateTimeline(root, body) {
   const projectId = asText(body.projectId);
   const unitDays = Number(body.unitDays);
@@ -3513,6 +3666,8 @@ async function dispatch(ctx, root, registry, method, path, url, body) {
       return startStyleApply(ctx, root, registry, body);
     case '/project/settings':
       return updateSettings(root, body);
+    case '/prompts/template':
+      return readPromptTemplates(root, body);
     case '/import/apply':
       return startImportChapters(ctx, root, registry, body);
     case '/outline/revise':
