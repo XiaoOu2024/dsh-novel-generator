@@ -934,16 +934,19 @@ body[data-ds-dark-theme] .dsn-shell{color-scheme:dark}
               error ? h('div', { className: 'dsn-hint warn' }, error) : null,
               data && data.settings
                 ? h('div', { className: 'dsn-hint' },
-                  t('当前设置：前文参考程度 = {ref}；前置提示词 = {prelude}；快照间隔 = 每 {days} 天',
-                    'Current settings: previous-text reference = {ref}; preface = {prelude}; snapshot interval = every {days} days',
+                  t('当前设置：前文参考程度 = {ref}；前置提示词 = {prelude}；快照间隔 = 每 {days} 天；世界快照 = {snap}',
+                    'Current settings: previous-text reference = {ref}; preface = {prelude}; snapshot interval = every {days} days; world snapshot = {snap}',
                     {
                       ref: data.settings.referenceLabel,
                       prelude: data.settings.preludeSet ? t('已设置', 'set') : t('未设置', 'not set'),
                       days: data.settings.unitDays,
+                      snap: data.settings.hasSnapshot
+                        ? t('最新一份在第 {day} 天', 'latest at day {day}', { day: data.settings.latestSnapshotDay })
+                        : t('还没有（下面的快照段会显示“暂无世界快照”，章节段标题也会变成“开篇到上一章”）', 'none yet — the snapshot section shows “no snapshot yet” and the chapter heading becomes “from the start”'),
                     }))
                 : null)),
           h('div', { className: 'dsn-dialog-foot' },
-            h('div', { className: 'dsn-hint' }, t('只读：花括号 ｛｝ 里是活数据占位，实际生成时会替换成你的内容。', 'Read-only: text in ｛｝ is a placeholder for live data, replaced with your own content when generating.')),
+            h('div', { className: 'dsn-hint' }, t('｛｝ 里是活数据，实际调用时替换成你的内容；章节号、第 N 天、日期与字数示例来自本面板虚构的示例章节，不是插件的固定规则（每章字数范围由该章大纲决定）。', 'Text in ｛｝ is live data, replaced at call time. Chapter numbers, day counts, dates and lengths come from a fictional example chapter this panel builds — they are not fixed rules; each chapter’s word range comes from its own outline.')),
             h('div', { className: 'dsn-spacer' }),
             h('button', { className: 'dsn-btn', type: 'button', disabled: !current, onClick: copy },
               copied ? t('已复制', 'Copied') : t('复制全文', 'Copy')))));

@@ -1575,7 +1575,7 @@ async function bootstrap(ctx, root) {
     }
   }
   return {
-    revision: '2026-10-30.3',
+    revision: '2026-10-31.2',
     projects,
     models: {
       default: modelCatalog.default || null,
@@ -2110,8 +2110,14 @@ async function updatePreset(ctx, root, body) {
  * Prompt for syncing a written chapter back into its outline: the synopsis plus
  * the four numbers the outline records, all measured from this one chapter.
  */
-function syncOutlinePrompt(project, chapter, prose) {
-  const chars = wordCount(prose);
+/**
+ * Prompt for syncing a written chapter back into its outline.
+ *
+ * `charsLabel` lets the read-only panel show a placeholder where the character
+ * count goes, instead of a number that would look like a fixed rule.
+ */
+function syncOutlinePrompt(project, chapter, prose, charsLabel) {
+  const chars = charsLabel === undefined ? String(wordCount(prose)) : String(charsLabel);
   const lines = [];
   lines.push('你是这部小说的编辑。作者已经写完了下面这一章，请据此同步它的章节大纲。');
   lines.push('读正文，输出一个 JSON 对象，不要输出别的文字、不要代码块：');
@@ -2675,9 +2681,18 @@ async function startStyleApply(ctx, root, registry, body) {
  * sent, and the author's own text is never read or echoed.
  */
 function placeholderProject(project) {
+  // The panel has to take the same branch the real prompt takes: a work with no
+  // snapshot yet gets "（暂无世界快照）" and an "开篇到上一章" heading, and the day
+  // numbers start from that work's own latest snapshot day. Only the snapshot's
+  // day and its existence are read — never its content.
+  const realSnapshots = project.snapshots || [];
+  const hasSnapshot = realSnapshots.length > 0;
+  const baseDay = hasSnapshot
+    ? Math.max(0, Math.round(Number(realSnapshots[realSnapshots.length - 1].day) || 0))
+    : 0;
   const snapshot = {
     snapshotId: 'placeholder',
-    day: 30,
+    day: baseDay,
     createdAt: 0,
     unitDays: 30,
     world: '｛世界观：随故事推进更新的设定｝',
@@ -2694,7 +2709,7 @@ function placeholderProject(project) {
     chapterId: 'placeholder-previous',
     index: 0,
     title: '｛上一章标题｝',
-    startDay: 30,
+    startDay: baseDay,
     durationDays: 30,
     wordCount: 0,
     status: 'generated',
@@ -2703,10 +2718,10 @@ function placeholderProject(project) {
     content: '｛上一章正文：按你的「前文参考程度」决定给多少｝',
     outline: {
       synopsis: '｛上一章梗概｝',
-      minWords: 800,
-      maxWords: 3000,
+      minWords: '｛上一章最低字数｝',
+      maxWords: '｛上一章最多字数｝',
       durationDays: 30,
-      synopsisMinChars: 100,
+      synopsisMinChars: '｛梗概最低字数｝',
       savedAt: 0,
     },
   };
@@ -2714,7 +2729,7 @@ function placeholderProject(project) {
     chapterId: 'placeholder-current',
     index: 1,
     title: '｛本章标题｝',
-    startDay: 60,
+    startDay: baseDay + 30,
     durationDays: 30,
     wordCount: 0,
     status: 'outlined',
@@ -2723,17 +2738,19 @@ function placeholderProject(project) {
     content: '',
     outline: {
       synopsis: '｛本章梗概：你在大纲页填写的内容｝',
-      minWords: 800,
-      maxWords: 3000,
+      // Symbolic on purpose: these land inside sentences, so a real number here
+      // would read as a hard-coded rule instead of a per-chapter setting.
+      minWords: '｛本章最低字数｝',
+      maxWords: '｛本章最多字数｝',
       durationDays: 30,
-      synopsisMinChars: 100,
+      synopsisMinChars: '｛梗概最低字数｝',
       savedAt: 0,
     },
   };
   return {
     ...project,
     prelude: { mode: 'custom', text: '｛本书前置提示词：你在「前置」里写的文本｝', updatedAt: 0 },
-    snapshots: [snapshot],
+    snapshots: hasSnapshot ? [snapshot] : [],
     chapters: [previous, current],
     timeline: { ...(project.timeline || {}), unitDays: 30 },
     reference: normalizeReference(project.reference),
@@ -2768,13 +2785,13 @@ function promptTemplates(project) {
       id: 'snapshot',
       title: '世界快照',
       when: '点「生成世界快照」，或章节推进到网格点时自动触发',
-      text: snapshotPrompt(stub, stub.snapshots[0], [previous], 60),
+      text: snapshotPrompt(stub, stub.snapshots[0], [previous], '｛落点天数｝'),
     },
     {
       id: 'syncOutline',
       title: '同步章节大纲',
       when: '点「同步章节大纲」，或导入章节时勾选了自动同步',
-      text: syncOutlinePrompt(stub, current, '｛本章正文｝'),
+      text: syncOutlinePrompt(stub, current, '｛本章正文｝', '｛本章正文字数｝'),
     },
     {
       id: 'revise',
@@ -2808,6 +2825,10 @@ function promptTemplates(project) {
       referenceLabel: { full: '前一章全文', half: '前一章的后一半', none: '不参考正文' }[mode],
       preludeSet: Boolean(project.prelude && project.prelude.text),
       unitDays: Math.max(1, Number(project.timeline && project.timeline.unitDays) || 30),
+      hasSnapshot: Boolean((project.snapshots || []).length > 0),
+      latestSnapshotDay: (project.snapshots || []).length > 0
+        ? Number(project.snapshots[project.snapshots.length - 1].day) || 0
+        : null,
     },
   };
 }
